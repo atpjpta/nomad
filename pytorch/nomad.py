@@ -32,7 +32,7 @@ def compute_next_nomad_matricest(
 
     # initialize the last end index to -1, simplifies the logic
     # when constructing a_li
-    idx_end = -1
+    idx_end = 0
     for idx in range(0, k_cols + khat_cols - 1):
         if idx < k_cols:
             # create entry of a_li per description above
@@ -51,7 +51,7 @@ def compute_next_nomad_matricest(
                 ],
                 dim=0
             )
-        elif idx <= khat_cols:
+        elif idx < khat_cols:
             # create the entry of a_li per description above
             # this is the middle of the slide described above
             print('I dont think this ever hits')
@@ -71,14 +71,14 @@ def compute_next_nomad_matricest(
                 ],
                 dim=0
             )
-        elif idx > khat_cols:
+        elif idx > khat_cols-1:
             # create the entry of a_li per description above
             # this is basically the tail end of the slide, as we are finishing
-            khat_idxs = torch.arange(start=0, end=k_cols+khat_cols-idx, step=1)
+            khat_idxs = torch.arange(start=0, end=k_cols+khat_cols-idx-1, step=1)
             khat_idxs = khat_idxs.unsqueeze(0)
-            k_idxs = torch.arange(start=idx-khat_cols, end=k_cols, step=1)
+            k_idxs = torch.arange(start=idx-khat_cols+1, end=k_cols, step=1)
             k_idxs = k_idxs.unsqueeze(0)
-            print('greater than khat')
+            #print('greater than khat')
             # print(khat_idxs)
             # print(khat_idxs.shape)
             # print(k_idxs)
@@ -94,15 +94,7 @@ def compute_next_nomad_matricest(
         # after we compute the next entry for a_li, we figure out where to insert it
         # we start at the last index, accounting for elements added on previous iterations
         idx_s = idx_end
-
-        print(entry)
-        print(entry.shape)
-
         idx_end = idx_s + entry.shape[1]
-
-        print(idx_s)
-        print(idx_end)
-        print(a_li.shape)
 
         # add the entry to a_li
         a_li[:, idx_s:idx_end] = entry
