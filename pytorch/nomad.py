@@ -1,12 +1,13 @@
 # Copyright (C) John Atkinson 2023
 import torch
-
+import matplotlib
 
 def compute_next_nomad_matricest(
     a: torch.Tensor,
     ahat: torch.Tensor,
     k: torch.Tensor,
-    khat: torch.Tensor):
+    khat: torch.Tensor,
+    device='cuda'):
 
     # get number of rows (i.e. the number of dimensions for this system
     num_dims = k.shape[0]
@@ -26,9 +27,6 @@ def compute_next_nomad_matricest(
     # DIAGRAM OF SLIDE HERE
     #
     a_li = torch.zeros((2, k_cols*khat_cols))
-
-    print(f'{k_cols=}')
-    print(f'{khat_cols=}')
 
     # initialize the last end index to -1, simplifies the logic
     # when constructing a_li
@@ -99,28 +97,28 @@ def compute_next_nomad_matricest(
         # add the entry to a_li
         a_li[:, idx_s:idx_end] = entry
 
-    print(a_li)
+    a_li = a_li.long()
 
     # compute the maximum number of terms in new khat/ahat matrices (actual number of terms is
     # likely much less)
     num_new_cols = a_li.shape[1]
 
     # create a row vector to represent the kronecker delta we will apply to row j of the sliding k matrix
-    d = torch.ones((1, a_li.shape[1]))
+    d = torch.ones((1, a_li.shape[1])).to(device)
 
     # preallocate for ahat and khat. cell matrices consume a ton of memory, so
     # an array structure is used for both ahatNew and khatNew. Since
     # coefficients must be calculated numRows times (one for each
     # k_(beta,i) - kroneckerDelta_(beta,j) ), every numColsNew columns of
     # ahatNew and khatNew correspond to a slide with a different value of j.
-    ahat_new = torch.zeros((num_dims, a_li.shape[1]*num_dims))
-    khat_new = torch.zeros((num_dims, a_li.shape[1]*num_dims))
+    ahat_new = torch.zeros((num_dims, a_li.shape[1]*num_dims)).cuda()
+    khat_new = torch.zeros((num_dims, a_li.shape[1]*num_dims)).cuda()
 
     # loop over the number of dimensions to figure out the new a and k matrices
     for j in range(1, num_dims):
         # get the a_(j,i) and k_(alpha,j) values
-        a_i_j = torch.repeat(a[j, a_li[2,:]], (num_dims, 1))
-        kh_al_j = torch.repeat(khat[j, a_li[1,:]], (num_dims, 1))
+        a_i_j = a[j, a_li[1, :]].repeat((num_dims, 1))
+        kh_al_j = khat[j, a_li[0, :]].repeat((num_dims, 1))
 
         # compute the a_hat component contained in j:
         # the starting index for this value of j is
@@ -129,7 +127,7 @@ def compute_next_nomad_matricest(
 
         ahat_new[:, idx_start:idx_end] = ahat[:, a_li[0, :]] * a_i_j * kh_al_j
 
-        delta = torch.cat([torch.zeros((j-1, 1)), torch.ones((1, 1)), torch.zeros(num_dims-j, 1)], dim=1)
+        delta = torch.cat([torch.zeros((j-1, 1)), torch.ones((1, 1)), torch.zeros(num_dims-j, 1)], dim=0).to(device)
         delta = torch.matmul(delta, d)
         khat_new[:, idx_start:idx_end] = khat[:, a_li[0, :]] + k[:, a_li[1, :]] - delta
 
@@ -144,14 +142,14 @@ def compute_next_nomad_matricest(
 
     # sum the coefficients of delete entries and store in correct location corresponding to wherever
     # the entries of khat_new were moved to
-    ahat = torch.zeros(khat.shape)
+    ahat = torch.zeros(khat.shape).cuda()
     for i in range(0, len(old_idx)):
         ahat[:, old_idx[i]] = ahat[:, old_idx[i]] + ahat_new[:, i]
 
     # flip to match the original structure defined in the math! should have no
     # effect on the algorithm functionality
-    khat = khat[:, ::-1]
-    ahat = ahat[:, ::-1]
+    khat = torch.flip(khat, dims=(0,))
+    ahat = torch.flip(ahat, dims=(0,))
 
     return ahat, khat
 
@@ -180,9 +178,6 @@ k = k.cuda()
 # take 50 derivatives
 n = 50
 
-# time step
-step = 0.05
-
 # create taylor series with the nomad algorithm
 # we will do this in steps so it can all be computed efficiently
 
@@ -195,19 +190,6 @@ a_hats = {
 k_hats = {
     1: k
 }
-
-def eval_term(a, k, x):
-    x_repeated = torch.repeat(x, (1, k.shape[1]))
-    x_repeated = torch.pow(x_repeated, k)
-    tmp = torch.prod(x_repeated, dim=0)
-
-    a_multiplicant = torch.repeat(tmp, (a.shape[0], 1))
-    val = torch.sum(a * a_multiplicant, dim=1)
-
-    return val
-
-# start to construct the function chain for computing a nomad step
-step = lambda x, t: x + eval_term(a_hats[1], k_hats[1], x)*(t**1)
 
 for i in range(2, n):
     # nomad itself returns the ahat's and khat's corresponding to the next
@@ -234,22 +216,60 @@ for i in range(2, n):
     a_hats[i] = ahat
     k_hats[i] = khat
 
-    step = lambda x, t: step(x, t) + eval_term(a_hats[i], k_hats[i], x)*(t**i)
+# apply one term of a/k to x
+def eval_term(a, k, x):
+    x_repeated = x.repeat((1, k.shape[1]))
+    x_repeated = torch.pow(x_repeated, k)
+    tmp = torch.prod(x_repeated, dim=0)
+
+    a_multiplicant = tmp.repeat((a.shape[0], 1))
+    val = torch.sum(a * a_multiplicant, dim=1, keepdims=True)
+
+    return val
+
+# start to construct the function chain for computing a nomad step
+def step(x, t, a_hats, k_hats):
+    for i in range(1, len(a_hats.keys())+1):
+        x = x + eval_term(a_hats[i], k_hats[i], x)*(t**i)
+    return x
 
 initial_conditions = torch.ones((2, 1))
+initial_conditions[0, 0] = -1
+initial_conditions[1, 0] = 1.0
 initial_conditions = initial_conditions.cuda()
 
 # compute nomad trajectories
-tstep = 0.05
+tstep = 0.005
+t_start = 0
+t_end = 5
+num_steps = int((t_end - t_start) / tstep)
 
+t = []
 x_traj = []
+t.append(0)
 x_t = initial_conditions
-for i in range(0, 1, tstep):
-    x_t = step(x_t, tstep)
+x_traj.append(x_t)
+
+exec_times = []
+import time
+for i in range(0, num_steps):
+    start_time = time.time()
+    x_t = step(x_t, tstep, a_hats, k_hats)
+    t.append(t[-1]+tstep)
     x_traj.append(x_t)
-
-    print(x_t)
-
-print(len(x_t))
+    end_time = time.time()
+    exec_times.append(end_time - start_time)
 
 
+print(len(x_traj))
+
+import matplotlib.pyplot as plt
+import numpy as np
+t = np.array(t)
+x_traj = torch.cat(x_traj, dim=1)
+x_traj = x_traj.detach().cpu().numpy()
+fig = plt.figure(figsize=(20, 10))
+plt.plot(t, x_traj[0, :])
+plt.plot(t, x_traj[1, :])
+plt.legend(['x1', 'x2'])
+plt.show()
