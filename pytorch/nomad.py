@@ -1,6 +1,8 @@
 # Copyright (C) John Atkinson 2023
 import torch
-import matplotlib
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 def compute_next_nomad_matrices(
     a: torch.Tensor,
@@ -154,14 +156,30 @@ def compute_next_nomad_matrices(
 
 # dx/dt = y.^2 - x
 # dy/dt = x.^2 - y
-k = torch.Tensor(
-    [[2, 2, 2, 1, 1, 1, 0, 0, 0 ],
-     [2, 1, 0, 2, 1, 0, 2, 1, 0 ]]
+# k = torch.Tensor(
+#     [[2, 2, 2, 1, 1, 1, 0, 0, 0 ],
+#      [2, 1, 0, 2, 1, 0, 2, 1, 0 ]]
+# )
+
+# a = torch.Tensor(
+#     [[0, 0, 0, 0, 0, -1, 1,  0, 0],
+#      [0, 0, 1, 0, 0,  0, 0, -1, 0]]
+# )
+
+# lorenz system a and k
+# dx/dt = 10*y - 10*x
+# dy/dt = 28*x - x*z - y
+# dz/dt = x*y - 3*z
+a = torch.Tensor(
+    [[ 0, 0,  0, -10, 0, 10,  0, 0 ],
+     [ 0, 0, -1,  28, 0, -1,  0, 0 ],
+     [ 0, 1,  0,   0, 0,  0, -3, 0 ]]
 )
 
-a = torch.Tensor(
-    [[0, 0, 0, 0, 0, -1, 1,  0, 0],
-     [0, 0, 1, 0, 0,  0, 0, -1, 0]]
+k = torch.Tensor(
+    [[ 1, 1, 1, 1, 0, 0, 0, 0 ],
+     [ 1, 1, 0, 0, 1, 1, 0, 0 ],
+     [ 1, 0, 1, 0, 1, 0, 1, 0 ]]
 )
 
 # find the nonzero columns of a
@@ -211,7 +229,6 @@ for i in range(2, n):
     # accuracy.
     #
     # Divide ahat by i before computation, for reasons explained above.
-    print(f'on deriv {i}')
     ahat, khat = compute_next_nomad_matrices( a, a_hats[i-1]/i, k, k_hats[i-1])
 
     # because of the trick we are doing above where we divide a hat by i progressively
@@ -226,67 +243,94 @@ for i in range(2, n):
     a_hats[i] = ahat
     k_hats[i] = khat
 
-# apply one term of a/k to x
+# we unsqueeze all the coefficient and exponent matrices so that we can quickly compute
+# derivatives for batches of initial conditions at once (assumes that last dimension is the batch dimension)
+for i in range(1, len(a_hats.keys())+1):
+    a_hats[i] = a_hats[i].unsqueeze(-1)
+    k_hats[i] = k_hats[i].unsqueeze(-1)
+
+# apply one term of a/k coefficient/exponent matrices to x using the nomad algorithm
 def eval_term(a, k, x):
-    print(x.shape)
-    x_repeated = x.repeat((1, k.shape[1]))
-    print(x_repeated.shape)
-    x_repeated = torch.pow(x_repeated, k)
-    tmp = torch.prod(x_repeated, dim=0)
-    print(tmp.shape)
-
-    a_multiplicant = tmp.repeat((a.shape[0], 1))
-    print(a_multiplicant.shape)
-
-    val = torch.sum(a * a_multiplicant, dim=1, keepdims=True)
-    print(val.shape)
-
-    return val
+    x = x.repeat((1, k.shape[1], 1))
+    x = torch.pow(x, k)
+    x = torch.prod(x, dim=0)
+    x = x.repeat((a.shape[0], 1, 1))
+    x = torch.sum(a * x, dim=1, keepdims=True)
+    return x
 
 # start to construct the function chain for computing a nomad step
 def step(x, t, a_hats, k_hats):
     for i in range(1, len(a_hats.keys())+1):
-        print(i)
         x = x + eval_term(a_hats[i], k_hats[i], x)*(t**i)
     return x
 
-initial_conditions = torch.ones((2, 1))
-initial_conditions[0, 0] = -1
-initial_conditions[1, 0] = 1.0
+initial_conditions = torch.rand((3, 1, 100))
+for i in range(initial_conditions.shape[-1]):
+    initial_conditions[0, 0, i] = 0 - np.sin(i*0.01)
+    initial_conditions[1, 0, i] = 0.0 + np.cos(i*0.01)
+    initial_conditions[2, 0, i] = 0.0 + torch.sin(initial_conditions[1, 0, i])
 initial_conditions = initial_conditions.cuda()
 
 # compute nomad trajectories
-tstep = 0.005
+tstep = 0.0001
 t_start = 0
-t_end = 5
+t_end = 1
 num_steps = int((t_end - t_start) / tstep)
 
+# some variables to keep track of all the results
 t = []
 x_traj = []
 t.append(0)
 x_t = initial_conditions
 x_traj.append(x_t)
 
+# solve the differential equations for each initial condition
 exec_times = []
 import time
 for i in range(0, num_steps):
     start_time = time.time()
     x_t = step(x_t, tstep, a_hats, k_hats)
     t.append(t[-1]+tstep)
+
     x_traj.append(x_t)
     end_time = time.time()
     exec_times.append(end_time - start_time)
 
+    if i % 500 == 0:
+        print(f'On t {t[-1]}, took {exec_times[-1]} seconds')
+
+# get some stats
+avg_step_time = np.mean(exec_times)
+print(f'Average exec time was {avg_step_time}')
+print(f'Total exec time was {np.sum(exec_times)}')
 
 print(len(x_traj))
 
-import matplotlib.pyplot as plt
-import numpy as np
+# convert back to numpy so we can plot
 t = np.array(t)
 x_traj = torch.cat(x_traj, dim=1)
 x_traj = x_traj.detach().cpu().numpy()
-fig = plt.figure(figsize=(20, 10))
-plt.plot(t, x_traj[0, :])
-plt.plot(t, x_traj[1, :])
-plt.legend(['x1', 'x2'])
+
+# NOTE: 2d
+# fig = plt.figure(figsize=(20, 10))
+# plt.plot(t, x_traj[0, :])
+# plt.plot(t, x_traj[1, :])
+# plt.legend(['x1', 'x2'])
+# plt.show()
+
+# NOTE: 3d plots
+x = x_traj[0, ...]
+y = x_traj[1, ...]
+z = x_traj[2, ...]
+
+fig = plt.figure()
+ax = fig.add_subplot(111, projection='3d')  # Create a 3D subplot
+for i in range(x.shape[-1]):
+    ax.plot(x[:, i], y[:, i], z[:, i])
+
+ax.set_xlabel('X Label')
+ax.set_ylabel('Y Label')
+ax.set_zlabel('Z Label')
+plt.title('3D Line Plot')
+
 plt.show()
