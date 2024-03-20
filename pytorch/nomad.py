@@ -2,7 +2,7 @@
 import torch
 import matplotlib
 
-def compute_next_nomad_matricest(
+def compute_next_nomad_matrices(
     a: torch.Tensor,
     ahat: torch.Tensor,
     k: torch.Tensor,
@@ -133,11 +133,10 @@ def compute_next_nomad_matricest(
 
     # remove any columns of ahat_new that are all zeros, and the corresponding columns of khat_new
     # find the nonzero columns of a
-    non_zero_cols = torch.sum((ahat_new == 0), dim=-1)
-    non_zero_cols = (non_zero_cols != 0)
-    ahat_new = ahat_new[non_zero_cols]
-    khat_new = khat_new[non_zero_cols]
-
+    zeros_per_column = torch.sum((ahat_new == 0), dim=0)
+    non_zero_cols = zeros_per_column != a.shape[0]
+    ahat_new = ahat_new[:, non_zero_cols]
+    khat_new = khat_new[:, non_zero_cols]
     khat, old_idx = torch.unique(khat_new, dim=1, return_inverse=True)
 
     # sum the coefficients of delete entries and store in correct location corresponding to wherever
@@ -166,14 +165,14 @@ a = torch.Tensor(
 )
 
 # find the nonzero columns of a
-non_zero_cols = torch.sum((a == 0), dim=-1)
-non_zero_cols = (non_zero_cols != 0)
-a = a[non_zero_cols]
-k = k[non_zero_cols]
+zeros_per_column = torch.sum((a == 0), dim=0)
+non_zero_cols = zeros_per_column != a.shape[0]
+a = a[:, non_zero_cols]
+k = k[:, non_zero_cols]
 
 # move to cuda
-a = a.cuda()
-k = k.cuda()
+a = a.double().cuda()
+k = k.double().cuda()
 
 # take 50 derivatives
 n = 50
@@ -212,24 +211,42 @@ for i in range(2, n):
     # accuracy.
     #
     # Divide ahat by i before computation, for reasons explained above.
-    ahat, khat = compute_next_nomad_matricest( a, a_hats[i-1]/i, k, k_hats[i-1])
+    print(f'on deriv {i}')
+    ahat, khat = compute_next_nomad_matrices( a, a_hats[i-1]/i, k, k_hats[i-1])
+
+    # because of the trick we are doing above where we divide a hat by i progressively
+    # to compute the n! in the denominator of the taylor series, elements of ahat
+    # typically tend to 0 eventually. so, we catch the condition where all coefficients have
+    # converged to 0, and break early in those cases to save on further computations since
+    # we know all coefficients past this term are also guaranteed to be 0.
+    # if more precision is needed, then we need to use a bigger dtype like float64
+    if ahat.shape[1] == 0:
+        break
+
     a_hats[i] = ahat
     k_hats[i] = khat
 
 # apply one term of a/k to x
 def eval_term(a, k, x):
+    print(x.shape)
     x_repeated = x.repeat((1, k.shape[1]))
+    print(x_repeated.shape)
     x_repeated = torch.pow(x_repeated, k)
     tmp = torch.prod(x_repeated, dim=0)
+    print(tmp.shape)
 
     a_multiplicant = tmp.repeat((a.shape[0], 1))
+    print(a_multiplicant.shape)
+
     val = torch.sum(a * a_multiplicant, dim=1, keepdims=True)
+    print(val.shape)
 
     return val
 
 # start to construct the function chain for computing a nomad step
 def step(x, t, a_hats, k_hats):
     for i in range(1, len(a_hats.keys())+1):
+        print(i)
         x = x + eval_term(a_hats[i], k_hats[i], x)*(t**i)
     return x
 
