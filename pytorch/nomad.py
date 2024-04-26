@@ -5,11 +5,15 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from nomad_solver import NomadSolver
 
+torch.set_printoptions(linewidth=200)
+
+device = 'cuda'
+
 # dx/dt = y.^2 - x
 # dy/dt = x.^2 - y
 k = torch.Tensor(
-    [[2, 2, 2, 1, 1, 1, 0, 0, 0 ],
-     [2, 1, 0, 2, 1, 0, 2, 1, 0 ]]
+    [[2, 2, 2, 1, 1,  1, 0,  0, 0 ],
+     [2, 1, 0, 2, 1,  0, 2,  1, 0 ]]
 )
 
 a = torch.Tensor(
@@ -20,7 +24,7 @@ a = torch.Tensor(
 # lorenz system a and k
 # dx/dt = 10*y - 10*x
 # dy/dt = 28*x - x*z - y
-# dz/dt = x*y - 3*z
+# # dz/dt = x*y - 3*z
 # a = torch.Tensor(
 #     [[ 0, 0,  0, -10, 0, 10,  0, 0 ],
 #      [ 0, 0, -1,  28, 0, -1,  0, 0 ],
@@ -34,17 +38,18 @@ a = torch.Tensor(
 # )
 
 # define some initial conditions
-initial_conditions = torch.rand((2, 1, 1))
+# (N, 1, batch_size)
+initial_conditions = torch.rand((2, 1, 20))
 for i in range(initial_conditions.shape[-1]):
     initial_conditions[0, 0, i] = 0 - np.sin(i*0.01)
     initial_conditions[1, 0, i] = 0.0 + np.cos(i*0.01)
     #initial_conditions[2, 0, i] = 0.0 + torch.sin(initial_conditions[1, 0, i])
-initial_conditions = initial_conditions.cuda()
+initial_conditions = initial_conditions.to(device)
 
 # solve the diff eq
-solver = NomadSolver(a, k)
-solver = solver.cuda()
-x_traj, t, exec_times = solver(initial_conditions, print_time_interval=500)
+solver = NomadSolver(a, k, n=50, device=device)
+solver = solver.to(device)
+x_traj, t, exec_times = solver(initial_conditions, tstep=0.001, print_time_interval=500)
 
 # get some stats
 avg_step_time = np.mean(exec_times)

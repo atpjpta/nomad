@@ -12,7 +12,9 @@ class NomadSolver(torch.nn.Module):
     def __init__(
         self,
         a: torch.Tensor,
-        k: torch.Tensor) -> None:
+        k: torch.Tensor,
+        n: int=50,
+        device='cuda') -> None:
         super().__init__()
 
         # find the nonzero columns of a
@@ -22,11 +24,8 @@ class NomadSolver(torch.nn.Module):
         k = k[:, non_zero_cols]
 
         # move to cuda
-        a = a.double().cuda()
-        k = k.double().cuda()
-
-        # take 50 derivatives
-        n = 50
+        a = a.double().to(device)
+        k = k.double().to(device)
 
         # create taylor series with the nomad algorithm
         # we will do this in steps so it can all be computed efficiently
@@ -36,13 +35,13 @@ class NomadSolver(torch.nn.Module):
         # we will compute the ahat and khat matrices for our chosen N up front and store them
         # NOTE: have to use strings so these can be stored as parameter dicts
         self.a_hats = {
-            str(1): a
+            str(0): a
         }
         self.k_hats = {
-            str(1): k
+            str(0): k
         }
 
-        for i in range(2, n):
+        for i in range(1, n):
             # nomad itself returns the ahat's and khat's corresponding to the next
             # derivative. However, for constructing a taylor series, one must
             # divide by n! for the n-th term in the series. As n grows, this
@@ -65,7 +64,13 @@ class NomadSolver(torch.nn.Module):
             # Divide ahat by i before computation, for reasons explained above.
             i_sub1_key = str(i-1)
             i_key = str(i)
-            ahat, khat = self.compute_next_nomad_matrices(a, self.a_hats[i_sub1_key]/i, k, self.k_hats[i_sub1_key])
+            ahat, khat = self.compute_next_nomad_matrices(
+                a,
+                self.a_hats[i_sub1_key]/i,
+                k,
+                self.k_hats[i_sub1_key],
+                device=device
+            )
 
             # because of the trick we are doing above where we divide a hat by i progressively
             # to compute the n! in the denominator of the taylor series, elements of ahat
@@ -81,7 +86,7 @@ class NomadSolver(torch.nn.Module):
 
         # we unsqueeze all the coefficient and exponent matrices so that we can quickly compute
         # derivatives for batches of initial conditions at once (assumes that last dimension is the batch dimension)
-        for i in range(1, len(self.a_hats.keys())+1):
+        for i in range(0, len(self.a_hats.keys())):
             i_key = str(i)
             self.a_hats[i_key] = self.a_hats[i_key].unsqueeze(-1)
             self.k_hats[i_key] = self.k_hats[i_key].unsqueeze(-1)
@@ -102,7 +107,7 @@ class NomadSolver(torch.nn.Module):
 
         # get number of columns of k and khat
         k_cols = k.shape[1]
-        khat_cols = k.shape[1]
+        khat_cols = khat.shape[1]
 
         # a_li is a vector of indices, [alpha ; i], that is created for fast indexing
         # indexing of khat and k. khat is indexed by alpha, and k is indexed by i.
@@ -140,8 +145,7 @@ class NomadSolver(torch.nn.Module):
             elif idx < khat_cols:
                 # create the entry of a_li per description above
                 # this is the middle of the slide described above
-                print('I dont think this ever hits')
-                khat_idxs = torch.arange(start=khat_cols-idx, end=khat_cols-(idx-k_cols), step=1)
+                khat_idxs = torch.arange(start=khat_cols-idx-1, end=khat_cols-(idx-k_cols)-1, step=1)
                 khat_idxs = khat_idxs.unsqueeze(0)
                 k_idxs = torch.arange(start=0, end=k_cols, step=1)
                 k_idxs = k_idxs.unsqueeze(0)
@@ -199,23 +203,23 @@ class NomadSolver(torch.nn.Module):
         # coefficients must be calculated numRows times (one for each
         # k_(beta,i) - kroneckerDelta_(beta,j) ), every numColsNew columns of
         # ahatNew and khatNew correspond to a slide with a different value of j.
-        ahat_new = torch.zeros((num_dims, a_li.shape[1]*num_dims)).cuda()
-        khat_new = torch.zeros((num_dims, a_li.shape[1]*num_dims)).cuda()
+        ahat_new = torch.zeros((num_dims, a_li.shape[1]*num_dims)).to(device)
+        khat_new = torch.zeros((num_dims, a_li.shape[1]*num_dims)).to(device)
 
         # loop over the number of dimensions to figure out the new a and k matrices
-        for j in range(1, num_dims):
+        for j in range(0, num_dims):
             # get the a_(j,i) and k_(alpha,j) values
             a_i_j = a[j, a_li[1, :]].repeat((num_dims, 1))
             kh_al_j = khat[j, a_li[0, :]].repeat((num_dims, 1))
 
             # compute the a_hat component contained in j:
             # the starting index for this value of j is
-            idx_start = (j-1)*num_new_cols
-            idx_end = j * num_new_cols
+            idx_start = j*num_new_cols
+            idx_end = (j+1) * num_new_cols
 
             ahat_new[:, idx_start:idx_end] = ahat[:, a_li[0, :]] * a_i_j * kh_al_j
 
-            delta = torch.cat([torch.zeros((j-1, 1)), torch.ones((1, 1)), torch.zeros(num_dims-j, 1)], dim=0).to(device)
+            delta = torch.cat([torch.zeros((j, 1)), torch.ones((1, 1)), torch.zeros(num_dims-j-1, 1)], dim=0).to(device)
             delta = torch.matmul(delta, d)
             khat_new[:, idx_start:idx_end] = khat[:, a_li[0, :]] + k[:, a_li[1, :]] - delta
 
@@ -229,7 +233,7 @@ class NomadSolver(torch.nn.Module):
 
         # sum the coefficients of delete entries and store in correct location corresponding to wherever
         # the entries of khat_new were moved to
-        ahat = torch.zeros(khat.shape).cuda()
+        ahat = torch.zeros(khat.shape).to(device)
         for i in range(0, len(old_idx)):
             ahat[:, old_idx[i]] = ahat[:, old_idx[i]] + ahat_new[:, i]
 
@@ -259,9 +263,9 @@ class NomadSolver(torch.nn.Module):
         self,
         x: torch.Tensor,
         t: torch.Tensor) -> torch.Tensor:
-        for i in range(1, len(self.a_hats.keys())+1):
+        for i in range(0, len(self.a_hats.keys())):
             i_key = str(i)
-            x = x + self.eval_term(self.a_hats[i_key], self.k_hats[i_key], x)*(t**i)
+            x = x + self.eval_term(self.a_hats[i_key], self.k_hats[i_key], x)*(t**(i+1))
         return x
 
     def forward(
