@@ -1,4 +1,4 @@
-# Copyright (C) John Atkinson 2023
+# Copyright (C) John Atkinson 2017-2024
 import torch
 import time
 import typing
