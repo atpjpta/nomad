@@ -46,31 +46,13 @@ class NomadSolver(torch.nn.Module):
         }
 
         for i in range(1, n):
-            # nomad itself returns the ahat's and khat's corresponding to the next
-            # derivative. However, for constructing a taylor series, one must
-            # divide by n! for the n-th term in the series. As n grows, this
-            # term grows so large that it falls well outside the range of accurate
-            # floating point (i.e. double) representation.
-            #
-            # Furthermore, as n grows, elements of ahat become very large as well,
-            # generally at the same rate of factorial growth. This leads to the
-            # same issue as n!, the numbers fall outside the range of non-sparse
-            # double representation.
-            #
-            # A workaround to this is dividing the ahat of the n-th derivative
-            # by n on each iteration, before computing the (n+1)-th ahat. By doing
-            # this, the n! is computed gradually and offsets the growth of
-            # individual elements in the n-th ahat. Hopefully, this change is
-            # enough to keep higher order ahat elements within the range of
-            # nonsparse double representation, and thus improving numerical
-            # accuracy.
-            #
-            # Divide ahat by i before computation, for reasons explained above.
+            # The previous table represents the i-th derivative divided by i!.
+            # Linearity lets us divide by the new order before differentiation.
             i_sub1_key = str(i-1)
             i_key = str(i)
             ahat, khat = self.compute_next_nomad_matrices(
                 a,
-                self.a_hats[i_sub1_key]/i,
+                self.a_hats[i_sub1_key] / (i + 1),
                 k,
                 self.k_hats[i_sub1_key],
                 self.coefficient_keep_threshold,
@@ -82,12 +64,7 @@ class NomadSolver(torch.nn.Module):
             print(khat.shape)
             print()
 
-            # because of the trick we are doing above where we divide a hat by i progressively
-            # to compute the n! in the denominator of the taylor series, elements of ahat
-            # typically tend to 0 eventually. so, we catch the condition where all coefficients have
-            # converged to 0, and break early in those cases to save on further computations since
-            # we know all coefficients past this term are also guaranteed to be 0.
-            # if more precision is needed, then we need to use a bigger dtype like float64
+            # An empty derivative table contributes no further Taylor terms.
             if ahat.shape[1] == 0:
                 break
 
@@ -130,92 +107,29 @@ class NomadSolver(torch.nn.Module):
         #
         # DIAGRAM OF SLIDE HERE
         #
-        a_li = torch.zeros((2, k_cols*khat_cols))
-
-        # initialize the last end index to -1, simplifies the logic
-        # when constructing a_li
-        idx_end = 0
-        for idx in range(0, k_cols + khat_cols - 1):
-            if idx < k_cols:
-                # create entry of a_li per description above
-                # this is the beginning of the slide described above
-                khat_idxs = torch.arange(start=khat_cols-idx-1, end=khat_cols, step=1)
-                khat_idxs = khat_idxs.unsqueeze(0)
-                k_idxs = torch.arange(start=0, end=idx+1, step=1)
-                k_idxs = k_idxs.unsqueeze(0)
-                # print('less than k')
-                # print(khat_idxs)
-                # print(k_idxs)
-                entry = torch.cat(
-                    [
-                        khat_idxs,
-                        k_idxs
-                    ],
-                    dim=0
-                )
-            elif idx < khat_cols:
-                # create the entry of a_li per description above
-                # this is the middle of the slide described above
-                khat_idxs = torch.arange(start=khat_cols-idx-1, end=khat_cols-(idx-k_cols)-1, step=1)
-                khat_idxs = khat_idxs.unsqueeze(0)
-                k_idxs = torch.arange(start=0, end=k_cols, step=1)
-                k_idxs = k_idxs.unsqueeze(0)
-                # print('less than khat')
-                # print(khat_idxs)
-                # print(khat_idxs.shape)
-                # print(k_idxs)
-                # print(k_idxs.shape)
-                entry = torch.cat(
-                    [
-                        khat_idxs,
-                        k_idxs
-                    ],
-                    dim=0
-                )
-            elif idx > khat_cols-1:
-                # create the entry of a_li per description above
-                # this is basically the tail end of the slide, as we are finishing
-                khat_idxs = torch.arange(start=0, end=k_cols+khat_cols-idx-1, step=1)
-                khat_idxs = khat_idxs.unsqueeze(0)
-                k_idxs = torch.arange(start=idx-khat_cols+1, end=k_cols, step=1)
-                k_idxs = k_idxs.unsqueeze(0)
-                #print('greater than khat')
-                # print(khat_idxs)
-                # print(khat_idxs.shape)
-                # print(k_idxs)
-                # print(k_idxs.shape)
-                entry = torch.cat(
-                    [
-                        khat_idxs,
-                        k_idxs
-                    ],
-                    dim=0
-                )
-
-            # after we compute the next entry for a_li, we figure out where to insert it
-            # we start at the last index, accounting for elements added on previous iterations
-            idx_s = idx_end
-            idx_end = idx_s + entry.shape[1]
-
-            # add the entry to a_li
-            a_li[:, idx_s:idx_end] = entry
-
-        a_li = a_li.long()
+        if k_cols == 0 or khat_cols == 0:
+            return ahat[:, :0], khat[:, :0]
+        a_li = torch.empty((2, k_cols*khat_cols), dtype=torch.long, device=k.device)
+        end = 0
+        for offset in range(khat_cols - 1, -k_cols, -1):
+            first = max(0, -offset)
+            stop = min(k_cols, khat_cols - offset)
+            field_indices = torch.arange(first, stop, device=k.device)
+            start, end = end, end + stop - first
+            a_li[0, start:end] = field_indices + offset
+            a_li[1, start:end] = field_indices
 
         # compute the maximum number of terms in new khat/ahat matrices (actual number of terms is
         # likely much less)
         num_new_cols = a_li.shape[1]
-
-        # create a row vector to represent the kronecker delta we will apply to row j of the sliding k matrix
-        d = torch.ones((1, a_li.shape[1])).to(device)
 
         # preallocate for ahat and khat. cell matrices consume a ton of memory, so
         # an array structure is used for both ahatNew and khatNew. Since
         # coefficients must be calculated numRows times (one for each
         # k_(beta,i) - kroneckerDelta_(beta,j) ), every numColsNew columns of
         # ahatNew and khatNew correspond to a slide with a different value of j.
-        ahat_new = torch.zeros((num_dims, a_li.shape[1]*num_dims)).to(device)
-        khat_new = torch.zeros((num_dims, a_li.shape[1]*num_dims)).to(device)
+        ahat_new = ahat.new_zeros((num_dims, num_new_cols*num_dims))
+        khat_new = khat.new_zeros((num_dims, num_new_cols*num_dims))
 
         # loop over the number of dimensions to figure out the new a and k matrices
         for j in range(0, num_dims):
@@ -230,9 +144,8 @@ class NomadSolver(torch.nn.Module):
 
             ahat_new[:, idx_start:idx_end] = ahat[:, a_li[0, :]] * a_i_j * kh_al_j
 
-            delta = torch.cat([torch.zeros((j, 1)), torch.ones((1, 1)), torch.zeros(num_dims-j-1, 1)], dim=0).to(device)
-            delta = torch.matmul(delta, d)
-            khat_new[:, idx_start:idx_end] = khat[:, a_li[0, :]] + k[:, a_li[1, :]] - delta
+            khat_new[:, idx_start:idx_end] = khat[:, a_li[0, :]] + k[:, a_li[1, :]]
+            khat_new[j, idx_start:idx_end] -= 1
 
         # remove any columns of ahat_new that are all zeros, and the corresponding columns of khat_new
         # find the nonzero columns of a
@@ -240,18 +153,20 @@ class NomadSolver(torch.nn.Module):
         non_zero_cols = zeros_per_column != a.shape[0]
         ahat_new = ahat_new[:, non_zero_cols]
         khat_new = khat_new[:, non_zero_cols]
+        if khat_new.shape[1] == 0:
+            return ahat_new, khat_new
         khat, old_idx = torch.unique(khat_new, dim=1, return_inverse=True)
 
         # sum the coefficients of delete entries and store in correct location corresponding to wherever
         # the entries of khat_new were moved to
-        ahat = torch.zeros(khat.shape).to(device)
+        ahat = ahat_new.new_zeros(khat.shape)
         for i in range(0, len(old_idx)):
             ahat[:, old_idx[i]] = ahat[:, old_idx[i]] + ahat_new[:, i]
 
         # flip to match the original structure defined in the math! should have no
         # effect on the algorithm functionality
-        khat = torch.flip(khat, dims=(0,))
-        ahat = torch.flip(ahat, dims=(0,))
+        khat = torch.flip(khat, dims=(1,))
+        ahat = torch.flip(ahat, dims=(1,))
 
         return ahat, khat
 
@@ -274,10 +189,11 @@ class NomadSolver(torch.nn.Module):
         self,
         x: torch.Tensor,
         t: torch.Tensor) -> torch.Tensor:
+        result = x
         for i in range(0, len(self.a_hats.keys())):
             i_key = str(i)
-            x = x + self.eval_term(self.a_hats[i_key], self.k_hats[i_key], x)*(t**(i+1))
-        return x
+            result = result + self.eval_term(self.a_hats[i_key], self.k_hats[i_key], x)*(t**(i+1))
+        return result
 
     def forward(
         self,

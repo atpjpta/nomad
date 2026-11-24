@@ -1,0 +1,1062 @@
+% Standalone manuscript. Compile twice with pdflatex, or once with tectonic.
+% Set \notebooknotesfalse below to omit the two documentary appendices.
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,booktabs}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{pdftitle={NOMAD: A Taylor solver for multivariate polynomial differential equations},
+  pdfauthor={John Atkinson},pdfsubject={Notebook derivation and implementation notes}}
+\newif\ifnotebooknotes
+\notebooknotestrue
+\newcommand{\RR}{\mathbb{R}}
+\newcommand{\NN}{\mathbb{N}_0}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\ii}{\mathrm{i}}
+\newcommand{\D}{\mathcal{D}_F}
+\newcommand{\src}[1]{\par\smallskip\noindent{\small\itshape Notebook, #1.}\par\medskip}
+\newcommand{\leaf}[2]{\par\smallskip\begingroup\interlinepenalty=10000\noindent\textbf{#1}\enspace #2\par\endgroup}
+\newcommand{\notegroup}[1]{\subsection*{#1}\addcontentsline{toc}{subsection}{#1}}
+\newcommand{\file}[1]{\texttt{\detokenize{#1}}}
+\DeclareMathOperator{\sech}{sech}
+\DeclareMathOperator{\csch}{csch}
+\setcounter{tocdepth}{2}
+\setlength{\emergencystretch}{1.3em}
+\setlength{\parindent}{1.2em}
+\setlength{\parskip}{2pt}
+\raggedbottom
+\begin{document}
+\begin{center}
+{\LARGE\bfseries NOMAD\par}
+\vspace{.4em}
+{\Large A Taylor solver for multivariate polynomial\\[.15em] differential equations\par}
+\vspace{.8em}
+{\large John Atkinson\par}
+\vspace{.3em}
+{\small Whitepaper draft from the 2016--2017 notebooks\par}
+\end{center}
+\begin{abstract}
+For an autonomous polynomial system, every time derivative of the solution is
+itself a polynomial in the current state. NOMAD constructs those polynomials
+before a time step is taken. It stores the exponent of each monomial in one
+column and the coefficients for all components of the system in a matching
+column. A single differentiation combines an old column with a column of the
+vector field, subtracts one from the exponent of the differentiated variable,
+and adds contributions with equal exponents. This paper derives both the explicit
+formula for the \(n\)th derivative and the sliding matrix procedure for computing
+it. A two-variable example follows the columns through to a Taylor step.
+The final part of the notebook gives an exponential-quotient representation for
+circular and hyperbolic functions of polynomial arguments. Finding a comparable
+higher-derivative algorithm for that representation remained open in the notes.
+\end{abstract}
+
+\section{The problem in the notebook}\label{sec:problem}
+The starting point was a question about an ordinary multivariate polynomial.
+If a table gives the exponent of each variable in each term, what changes in
+that table when the polynomial is differentiated? The notebook first answers
+the question for a gradient and a Hessian. It then uses a polynomial for each
+right-hand side of a system
+\begin{equation}\label{eq:ivp}
+   \dot x=F(x),\qquad x(t_0)=z,\qquad x=(x_1,\ldots,x_M)^\mathsf{T}\in\RR^M .
+\end{equation}
+Now differentiating \(x_j(t)\) inserts another polynomial, \(F_j\). The working
+problem on p.~11 is to find \(\dd^n x_\ell/\dd t^n\) directly from the
+coefficients and exponents of those first derivatives. Once constructed, this
+expression can be evaluated at any initial state for the same field.
+
+The cover of the photographic notebook~\cite{notebook} calls NOMAD the “N-th Order M-Dimensional Nonlinear Diff Eq Solver.”
+The derivation began during 2016--2017, and the clean review in the notebook is
+dated 27 August 2017. We use \(N\) for a bound on each variable's exponent in
+\(F\), \(n\) for a time derivative, and \(p\) for the order retained in a
+numerical step. The equations in \eqref{eq:ivp} are first order in time.
+
+\paragraph{Relation to Taylor integration.}
+The operator \(F\cdot\nabla\) that appears below is the Lie derivative along
+the field. Iterating it on coordinate functions gives the classical Lie-series
+description of the flow \cite{pal}. High-order Taylor integrators can also
+compute series coefficients at a given state by automatic differentiation
+\cite{jorba}. The object constructed in this notebook is a table of
+polynomials \emph{in the state}, one for every requested order. Its
+construction cost can therefore be shared across time steps and initial
+conditions. The question addressed here is how to build and collect those
+tables from the monomials of \(F\).
+\src{pp.~2--11}
+
+\section{The coefficient and exponent tables}\label{sec:encoding}
+For a column \(k\in\NN^M\), write
+\(x^k=\prod_{\beta=1}^M x_\beta^{k_\beta}\), with a factor of exponent zero
+equal to one, including at \(x_\beta=0\). Let \(e_j\) be the \(j\)th unit
+vector and \(\delta_{\beta j}=(e_j)_\beta\). If the largest individual power
+is \(N\), the full table \(K\) contains \(T=(N+1)^M\) columns \(k_i\).
+The last coordinate varies fastest, and each digit runs from \(N\) down to
+zero. Equivalently, for \(1\leq i\leq T\),
+\begin{equation}\label{eq:digit}
+  K_{\beta i}=N-
+  \left(\left\lfloor\frac{i-1}{(N+1)^{M-\beta}}\right\rfloor
+        \bmod (N+1)\right).
+\end{equation}
+In row \(\beta\), each value is repeated \((N+1)^{M-\beta}\) times per
+run, and the full descending run is repeated \((N+1)^{\beta-1}\) times.
+This typesets the repeated blocks of ones on pp.~3 and 10. The corner
+\(x_1^N\cdots x_M^N\) belongs to the table and has total degree \(MN\).
+
+For a scalar polynomial \(P(x)=\sum_i a_i x^{k_i}\), the gradient and Hessian
+on p.~2 follow by retaining the original column index in each sum,
+\begin{align}
+ \partial_w P
+ &=\sum_{i:K_{wi}>0} a_iK_{wi}\,x^{k_i-e_w},\label{eq:grad}\\
+ \partial_w^2 P
+ &=\sum_{i:K_{wi}\ge2}a_iK_{wi}(K_{wi}-1)\,x^{k_i-2e_w},\label{eq:hpure}\\
+ \partial_y\partial_w P
+ &=\sum_{\substack{i:K_{wi}>0\\K_{yi}>0}}
+    a_iK_{wi}K_{yi}\,x^{k_i-e_w-e_y},\qquad y\ne w .\label{eq:hmixed}
+\end{align}
+The notebook calls the retained coefficients \(b_{wi}\) and \(c_{ywi}\).
+The column counts before coefficient zeros are taken into account are
+\(N(N+1)^{M-1}\) for \eqref{eq:grad},
+\(\max(N-1,0)(N+1)^{M-1}\) for \eqref{eq:hpure}, and
+\(N^2(N+1)^{M-2}\) for \eqref{eq:hmixed} when \(M\ge2\).
+Stacking the first derivatives gives \(\nabla P\), and arranging the second
+derivatives by \(y,w\) gives the Hessian.
+
+With a common exponent table and a real \(M\times T\) coefficient matrix \(A\), the field has components
+\begin{equation}\label{eq:field}
+ F_\ell(x)=\sum_{i=1}^{T} A_{\ell i}\,x^{k_i}.
+\end{equation}
+A zero entry excludes a monomial in one equation. A whole column may be
+discarded when \(A_{:i}=0\). Below \(S\) denotes the number of columns kept,
+relabeled \(1,\ldots,S\), with \(A,K\) denoting this reduced pair. The same
+formulas hold for the full pair. The all-constant term has \(k_i=0\) and may
+have a nonzero coefficient.
+
+\paragraph{The repeated state array.}
+The working notes write \(X^\beta_\alpha=x_\beta\) for every column
+\(\alpha\). Raising \(X\) to \(K\) elementwise and taking a product down each
+column gives the vector of monomials \(m_K(x)=(x^{k_1},\ldots,x^{k_S})^\mathsf{T}\).
+Thus \(F(x)=A\,m_K(x)\). The symbol \(\dd x^\ell_\alpha/\dd t\) on pp.~25--28
+labels the contribution \(A_{\ell\alpha}x^{k_\alpha}\) to \(\dot x_\ell\).
+All columns are evaluated at the same state. This convention becomes essential
+when the notes regroup sums over \(\alpha\).
+\src{pp.~2--4, 10--11, 25--29, 39, 45--46}
+
+\section{Repeated time differentiation}\label{sec:derivatives}
+For any polynomial \(G\), the chain rule along \eqref{eq:ivp} gives
+\[
+  \frac{\dd}{\dd t}G(x(t))=(\D G)(x(t)),\qquad
+  \D G=\sum_{j=1}^M F_j\,\partial_jG .
+\]
+In the handwritten derivation this identity emerges by peeling off the factors
+of \(x^u=x_1^{u_1}\cdots x_M^{u_M}\) one at a time. Differentiating the
+\(j\)th factor pulls down \(u_j\) and leaves the other factors intact. Inserting
+\eqref{eq:field} gives
+\begin{equation}\label{eq:one}
+ \D(x^u)
+ =\sum_{j:u_j>0}u_j x^{u-e_j}F_j(x)
+ =\sum_{j:u_j>0}\sum_{i=1}^S u_j A_{ji}\,x^{u+k_i-e_j}.
+\end{equation}
+When \(u_j=0\), this branch ends before forming an exponent. This also
+defines the computation on coordinate planes. The extra undifferentiated
+product in the trial on p.~12 disappears in the correction on pp.~13--14.
+
+\subsection{From the second derivative to the fourth}
+Choose the initial column \(\alpha\). Each further differentiation chooses a
+coordinate \(j_r\) and a refreshed field column \(i_r\). Write
+\[
+ u_0=k_\alpha,\qquad
+ u_r=k_\alpha+\sum_{s=1}^{r}(k_{i_s}-e_{j_s}).
+\]
+In the following displays, \(\sum^{*}\) omits a choice whenever
+\((u_{r-1})_{j_r}=0\). A coordinate index runs from 1 to \(M\), and a column
+index from 1 to \(S\). With \(x=x(t)\), the first four derivatives are
+\begin{align}
+ x_\ell' &= \sum_\alpha A_{\ell\alpha}x^{u_0},\nonumber\\
+ x_\ell'' &= \sum_{\alpha,j_1,i_1}^{*}
+  A_{\ell\alpha}\,K_{j_1\alpha} A_{j_1 i_1}\,x^{u_1},\label{eq:d2}\\
+ x_\ell''' &= \sum_{\alpha,j_1,i_1,j_2,i_2}^{*}
+  A_{\ell\alpha}\,K_{j_1\alpha} A_{j_1 i_1}
+    (K_{j_2\alpha}+K_{j_2i_1}-\delta_{j_2 j_1}) A_{j_2i_2}\,x^{u_2},
+    \label{eq:d3}\\
+ x_\ell^{(4)} &= \sum_{\alpha,j_1,i_1,j_2,i_2,j_3,i_3}^{*}
+ A_{\ell\alpha}\prod_{r=1}^{3}\big[(u_{r-1})_{j_r} A_{j_ri_r}\big]\,
+ x^{u_3}. \label{eq:d4}
+\end{align}
+The new multiplier in \eqref{eq:d4} reads
+\(K_{j_3\alpha}+K_{j_3i_1}+K_{j_3i_2}-\delta_{j_3j_1}-\delta_{j_3j_2}\).
+On p.~19 the fourth derivative is a prediction. Pages 20--21 verify it by
+naming the entire old exponent \(\hat k\) and applying the product rule to
+\(x^{\hat k}\). This calculation identifies the exponent one must carry
+forward at \emph{every} differentiation.
+\src{pp.~4--6, 12--21, 23--24}
+
+\subsection{The explicit formula for any derivative}
+The notebook abbreviates the \(2n-1\) nested sums using \(J(n)\) and \(I(n)\).
+The coordinate and column choices range over the ordered tuples
+\[
+  (j_1,\ldots,j_{n-1})\in\{1,\ldots,M\}^{n-1},\qquad
+  (i_1,\ldots,i_{n-1})\in\{1,\ldots,S\}^{n-1}.
+\]
+An empty choice contributes once and an empty product equals one. The time
+derivative of order \(n\ge1\) is
+\begin{equation}\label{eq:path}
+ \boxed{\displaystyle
+ x_\ell^{(n)}(t)=\sum_{\alpha,J(n),I(n)}^{*}
+ A_{\ell\alpha}
+ \left(\prod_{r=1}^{n-1}(u_{r-1})_{j_r} A_{j_ri_r}\right)
+ x(t)^{u_{n-1}} .}
+\end{equation}
+To recover the scalar-index expression boxed on p.~30, set \(i_0=\alpha\),
+\(j_0=\ell\), and \(U(s-1)=0\) at \(s=0\), \(1\) at integer \(s\ge1\).
+Define
+\[
+  B_\beta(r)=\sum_{s=0}^{r}
+       \big(K_{\beta i_s}-\delta_{\beta j_s} U(s-1)\big).
+\]
+Each summand of \eqref{eq:path} is the notebook's three factors,
+\begin{equation}\label{eq:three}
+ \underbrace{\prod_{r=0}^{n-1} A_{j_r i_r}}_{\text{field coefficients}}
+ \quad\underbrace{\prod_{r=1}^{n-1} B_{j_r}(r-1)}_{\text{differentiated powers}}
+ \quad\underbrace{\prod_{\beta=1}^M x_\beta^{B_\beta(n-1)}}_{\text{remaining monomial}}.
+\end{equation}
+The step function suppresses the Kronecker subtraction at the initial column.
+For \(n=1\), \eqref{eq:path} therefore reduces to the input field.
+
+\paragraph{Proof.}
+The case \(n=1\) is \eqref{eq:field}. In any term at order \(n\) the
+coefficient is independent of time. Applying \eqref{eq:one} to the remaining
+monomial extends its choices by \((j_n,i_n)\), multiplies its coefficient by
+\((u_{n-1})_{j_n}A_{j_n i_n}\), and leaves exponent \(u_n\). These are exactly
+the terms and factors of \eqref{eq:path} at order \(n+1\). This proves the
+formula by induction. Before zero factors are considered there are
+\(S(MS)^{n-1}\) choices for a nonempty field. Many lead to the same monomial.
+\src{pp.~5--7, 19--30, 54}
+
+\section{Collecting derivatives into matrices}\label{sec:recurrence}
+The move from the expanded expression to the algorithm occurs on pp.~31--33.
+Performing the innermost column sum in the second derivative gives
+\[
+ x_\ell''=\sum_{\alpha,j:K_{j\alpha}>0}
+ \underbrace{A_{\ell\alpha}K_{j\alpha}x^{k_\alpha-e_j}}
+              _{\partial_j(A_{\ell\alpha}x^{k_\alpha})}
+ \underbrace{\sum_i A_{ji}x^{k_i}}_{F_j(x)}.
+\]
+For the third derivative the same factorization works with each term of
+\(x_\ell''\). The inner sums over \(j_1,i_1\) have already determined a
+coefficient and a column \(k_\alpha+k_{i_1}-e_{j_1}\). Those two objects
+contain everything needed for the next differentiation. In particular,
+terms with equal exponents can be added \emph{before} differentiating again.
+
+Let \(H_n=\D^{\,n-1}F\), so \(H_n(x(t))=x^{(n)}(t)\). With each exponent \(q_\alpha\) in
+\(\widehat K^{(n)}\) store its vector of coefficients
+\(c_\alpha=\widehat A^{(n)}_{:\alpha}\). Then
+\begin{equation}\label{eq:table}
+  H_1=F,\qquad H_n(x)=\sum_{\alpha=1}^{S_n}c_\alpha x^{q_\alpha},
+  \qquad H_{n+1}=\D H_n .
+\end{equation}
+Initialize \((\widehat A^{(1)},\widehat K^{(1)})=(A,K)\). For each choice of \((\alpha,j,i)\) with \((q_\alpha)_j>0\),
+\eqref{eq:one} gives the update
+\begin{equation}\label{eq:rec}
+ \boxed{\displaystyle
+ v=q_\alpha+k_i-e_j,\qquad
+ \Delta c=c_\alpha\,(q_\alpha)_j\,A_{ji}.}
+\end{equation}
+For each distinct \(v\), its new column is
+\begin{equation}\label{eq:group}
+ \widehat A^{(n+1)}_{:v}
+ =\sum_{\substack{\alpha,j,i:\ (q_\alpha)_j>0\\ q_\alpha+k_i-e_j=v}}
+     c_\alpha (q_\alpha)_j A_{ji}.
+\end{equation}
+Here \(v\) is the exponent used to look up the column. In the review on
+p.~8, the multiplying exponent is written with row \(\ell\). The raw
+derivation on pp.~53 and 55 and the product rule both give row \(j\).
+The output component \(\ell\) selects an entry of \(c_\alpha\).
+\src{pp.~8--9, 26--27, 31--37, 44, 53--55}
+
+\subsection{Sliding the original table across the current table}\label{sec:slide}
+The notebook draws a circled plus between \(\widehat K^{(n)}\) and the shifted
+matrix \(K-e_j{\bf1}^{\mathsf T}\). For a fixed \(j\), the first column of the
+shifted matrix first touches the last column of the current matrix.
+Both arrays keep their orientation as the shifted matrix moves across. Each
+overlap gives a list of pairs \((\alpha,i)\). For two tables of four columns,
+the entire handwritten index list on p.~48 reads as follows.
+\begin{center}
+\begin{tabular}{@{}rll@{}}
+\toprule
+Offset \(\alpha-i\)& Current columns \(\alpha\)& Field columns \(i\)\\
+\midrule
+ 3&4&1\\
+ 2&3, 4&1, 2\\
+ 1&2, 3, 4&1, 2, 3\\
+ 0&1, 2, 3, 4&1, 2, 3, 4\\
+ \(-1\)&1, 2, 3&2, 3, 4\\
+ \(-2\)&1, 2&3, 4\\
+ \(-3\)&1&4\\
+\bottomrule
+\end{tabular}
+\end{center}
+For \(P=S_n\) current columns and \(Q=S\) field columns, both positive, take
+\(d=P-1,P-2,\ldots,1-Q\). At offset \(d\), take
+\[
+ \max(1,1-d)\le i\le\min(Q,P-d),\qquad \alpha=i+d.
+\]
+Each pair has exactly one offset. There are \(P+Q-1\) alignments and \(PQ\)
+pairs per coordinate. With \(m=\min(P,Q)\) and \(L=\max(P,Q)\), the notebook's
+count is \(2\sum_{r=1}^{m-1}r+m(L-m+1)=PQ\). For \(P=6,Q=4\) the overlap
+lengths are \(1,2,3,4,4,4,3,2,1\), a total of 24 pairs.
+
+The analogy with convolution has a precise interpretation. Index the old
+coefficient vector by its exponent \(u\), writing it as \(c(u)\), and index
+the \(j\)th input coefficient by its exponent \(w\), writing \(a_j(w)\).
+Use zero for an absent coefficient. The coefficient of \(x^v\) after one
+differentiation is
+\begin{equation}\label{eq:conv}
+ \sum_{j=1}^M\;\sum_{\substack{b,w\in\NN^M\\b+w=v}}
+       (b_j+1)c(b+e_j)a_j(w).
+\end{equation}
+For each \(j\), polynomial multiplication convolves the exponent-indexed
+coefficients of \(\partial_j H_n\) and \(F_j\). The drawn slide enumerates
+pairs of \emph{stored columns}. A slide offset can contain several different
+exponents, and the same exponent can occur at several offsets or coordinates.
+Equation~\eqref{eq:group} collects by the full exponent vector across all of them.
+
+\paragraph{Connection with the Carleman matrix.}
+The same coefficients can be indexed by the monomial being differentiated
+and the monomial it produces. Write
+\[
+ L_{uv}=\sum_{j:u_j>0}u_j\,a_j(v-u+e_j),\qquad
+ \D(x^u)=\sum_v L_{uv}x^v ,
+\]
+with \(a_j(w)=0\) for any missing exponent. For fields with \(F(0)=0\)
+this entry is the monomial Carleman matrix formula in
+Chermnykh \cite[Prop.~4, Eq.~(5)]{carleman}. A constant field term in the
+present problem is included by allowing \(w=0\). In this notation NOMAD's
+grouped update is \(c_{\rm new}(v)=\sum_u c(u)L_{uv}\). It constructs
+the entries reached from the current derivative and truncates the solution
+in time order \(p\). This gives a point of comparison for the notebook's
+sliding construction.
+
+\paragraph{One derivative in the notebook's order.}
+The following is the algorithm of p.~53, written for current width \(P\) and
+original width \(Q\). All coefficient additions are vector additions.
+\begin{enumerate}
+\item Start an empty table indexed by \(v\), with missing coefficients equal to
+the zero vector. For each \(j=1,\ldots,M\), traverse the offsets above.
+\item For each aligned pair \((\alpha,i)\), read \((q_\alpha)_j\) and
+\(A_{ji}\). If either is zero, pass to the next pair. Otherwise form \(v\) and
+add \(\Delta c\) from \eqref{eq:rec} to the entry for \(v\).
+\item Remove entries whose accumulated vector is zero. Sort the remaining
+exponents in descending lexicographic order, moving each coefficient vector
+with its exponent. These are \(\widehat K^{(n+1)},\widehat A^{(n+1)}\).
+\end{enumerate}
+An empty resulting table represents the identically zero derivative. Its later
+derivatives vanish in exact arithmetic. If the original table is empty, the
+solution is the constant state \(z\). A zero found by evaluating a table at a particular state permits no such inference.
+
+\paragraph{How large can a table become?}
+Pages 7 and 34 estimate a dense allocation of \((2^{n-1}N+1)^M\) slots
+by successively doubling a bound on each exponent. This is a loose upper
+bound. Each coordinate of \(u_{n-1}\) in \eqref{eq:path} is at most \(nN\), which gives at most \((nN+1)^M\)
+distinct exponents. If \(D\ge1\) bounds the \emph{total} degree of \(F\),
+each surviving differentiation adds at most \(D-1\) to total degree, so
+\(\deg H_n\le 1+n(D-1)\). The actual table has only the \(S_n\) keys that
+survive collection. Building it requires at most \(MS_{n-1}S\) candidate
+vectors for \(n\ge2\), before the zero tests. This distinction between candidate
+products and surviving monomials motivated the slide.
+\src{pp.~7--9, 33--53}
+
+\section{A hand computation in two variables}\label{sec:example}
+The example that connects the early algebra to the implementation is
+\begin{equation}\label{eq:xy}
+ \dot x=y^2-x,\qquad \dot y=x^2-y .
+\end{equation}
+On p.~22 the full exponent matrix and its selected coefficients are
+\[
+ K_{\rm full}=
+ \begin{pmatrix}2&2&2&1&1&1&0&0&0\\2&1&0&2&1&0&2&1&0\end{pmatrix},
+ \qquad
+ A_{\rm full}=
+ \begin{pmatrix}0&0&0&0&0&-1&1&0&0\\0&0&1&0&0&0&0&-1&0\end{pmatrix}.
+\]
+Keeping columns \(3,6,7,8\) gives
+\begin{equation}\label{eq:xy1}
+ K=\begin{pmatrix}2&1&0&0\\0&0&2&1\end{pmatrix},\qquad
+ A=\begin{pmatrix}0&-1&1&0\\1&0&0&-1\end{pmatrix}.
+\end{equation}
+For \(j=1\) the notebook slides the four columns
+\((1,0),(0,0),(-1,2),(-1,1)\) across \(K\). A shifted field column can
+contain \(-1\) before the current exponent is added. At offset \(d=-1\) the shifted table extends one column to the left. The
+three overlapping pairs are aligned below.
+\[
+ \begin{array}{r@{\quad}ccccc}
+  \text{current } q_\alpha & & (2,0) & (1,0) & (0,2) & (0,1)\\
+  \text{shifted } k_i-e_1  & (1,0) & (0,0) & (-1,2) & (-1,1) & \\
+  \hline
+  (\alpha,i) & & (1,2) & (2,3) & (3,4) &\\
+  q_\alpha+k_i-e_1 & & (2,0) & (0,2) & (-1,3) &
+ \end{array}
+\]
+The third pair has \((q_3)_1=0\) and is discarded. The second pair
+\(\alpha=2,\ i=3,\ j=1\) gives \(q_\alpha=(1,0)\) and
+\(k_i-e_1=(-1,2)\). Their sum is \((0,2)\), with vector contribution
+\((-1,0)^\mathsf{T}\). The coordinate \(j=2\) contributes
+\((-2,0)^\mathsf{T}\) to this same key from \(\alpha=3,\ i=4\). This is
+the \(-3y^2\) in \(x''\). Comparing or rejecting the shifted field column
+before adding \(q_\alpha\) would lose the first contribution.
+
+Here are the two passes in polynomial form, with one entry per output component.
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Differentiated coordinate & Contribution to \(x''\) & Contribution to \(y''\)\\
+\midrule
+\(x\) & \(x-y^2\) & \(2xy^2-2x^2\)\\
+\(y\) & \(2x^2y-2y^2\) & \(y-x^2\)\\
+\bottomrule
+\end{tabular}
+\end{center}
+After collecting and sorting, pp.~50--51 give
+\begin{equation}\label{eq:xy2}
+ \widehat K^{(2)}=\begin{pmatrix}2&2&1&1&0&0\\1&0&2&0&2&1\end{pmatrix},
+ \qquad
+ \widehat A^{(2)}=\begin{pmatrix}2&0&0&1&-3&0\\0&-3&2&0&0&1\end{pmatrix}.
+\end{equation}
+Reading off the columns gives
+\begin{equation}\label{eq:xyD2}
+ x''=2x^2y+x-3y^2,\qquad y''=2xy^2+y-3x^2 .
+\end{equation}
+Direct differentiation gives the same expressions from
+\(x''=2y(x^2-y)-(y^2-x)\) and \(y''=2x(y^2-x)-(x^2-y)\).
+The six columns of \eqref{eq:xy2} become the current table for the next
+slide. The four columns in \eqref{eq:xy1} remain the field table.
+\src{pp.~22, 45, 47--53}
+
+\section{From derivative tables to a time step}\label{sec:taylor}
+With \(z=x(t_0)\), the Taylor series on p.~7 reads
+\begin{equation}\label{eq:series}
+ x(t_0+h)=z+\sum_{n=1}^{\infty}\frac{h^n}{n!}H_n(z).
+\end{equation}
+A polynomial field is analytic, so the solution has such a series locally.
+Its convergence radius depends on the system and initial state. For instance,
+\(\dot x=x^2\) gives \(H_n(z)=n!\,z^{n+1}\) for \(n\ge1\). The series is
+geometric and sums to \(z/(1-hz)\) for \(|hz|<1\) when \(z\ne0\). The finite
+formula for each derivative and the convergence interval of their infinite sum
+are separate conclusions.
+
+\subsection{Distributing the factorial}
+Pages 54--57 describe a practical difficulty. Raw derivative coefficients and
+\(n!\) can both be large well before their quotient is needed. Let
+\(C_n(x)=H_n(x)/n!\). Linearity of \(\D\) gives
+\begin{equation}\label{eq:scale}
+ C_1=F,\qquad C_{n+1}=\frac{\D C_n}{n+1}.
+\end{equation}
+Thus, in passing from order \(n\) to \(n+1\), the scaled version of
+\eqref{eq:rec} adds \(c_\alpha(q_\alpha)_j A_{ji}/(n+1)\), where
+\(c_\alpha\) is already a coefficient of \(C_n\). Only the old derivative
+coefficients are scaled. The original field \(A\) is used in every pass.
+Page 57 instead stores a partially scaled table representing
+\(H_n/(n-1)!\). Its series term still requires a final division by \(n\).
+Equation~\eqref{eq:scale} incorporates that last division in the stored table.
+The divisions \(1/2,1/3,\ldots,1/n\) accumulate to \(1/n!\).
+Scaling controls one source of growth. Rounding, cancellation and the size of
+the remaining coefficients still depend on the field and the order.
+
+\subsection{Evaluation and restart}
+Precompute \(C_1,\ldots,C_p\) for the chosen field and retain their exponent
+tables. With state \(z_m\) at \(t_m\) and step \(h_m=t_{m+1}-t_m\), set
+\begin{equation}\label{eq:step}
+ \boxed{\displaystyle z_{m+1}=z_m+\sum_{n=1}^{p}h_m^n C_n(z_m).}
+\end{equation}
+The expansion state is fixed throughout the sum. Only after completing it is
+the series restarted at \(z_{m+1}\). For an exact starting state and bounded
+\((p+1)\)st derivative over the step, the local error is \(O(|h_m|^{p+1})\)
+by Taylor's theorem. On a fixed interval where the solution and steps stay in
+a compact neighborhood, smoothness gives the usual global
+\(O((\max_m |h_m|)^p)\) bound in exact arithmetic for sufficiently small steps.
+The adaptive feature on p.~34 concerns the number of stored monomials. The
+notebook's series takes the step size as an input.
+
+As an arithmetic check added for this edition, take \((x,y)=(1,2)\) in
+\eqref{eq:xy}. The first four derivatives at that point are
+\[
+ \begin{array}{c|rrrr}
+    n&1&2&3&4\\ \hline
+    x^{(n)}&3&-7&37&-91\\
+    y^{(n)}&-1&7&-3&-49
+ \end{array}.
+\]
+For example \(x'''=2(y')^2+2yy''-x''=37\).
+The second-order step is
+\((1+3h-\tfrac72h^2,\ 2-h+\tfrac72h^2)\).
+An independent check uses coefficient matching. If
+\(x(t_0+h)=\sum u_n h^n\) and \(y(t_0+h)=\sum v_n h^n\), then
+\[
+ (n+1)u_{n+1}=\sum_{k=0}^n v_kv_{n-k}-u_n,\qquad
+ (n+1)v_{n+1}=\sum_{k=0}^n u_ku_{n-k}-v_n.
+\]
+Starting from \((u_0,v_0)=(1,2)\), these rational recurrences agree with
+\(H_n(1,2)/n!\) through order eight. They offer a check of the factorials
+independent of the sliding indices.
+\src{pp.~7--9, 50--57}
+
+\clearpage
+\section{Polynomial arguments inside transcendental terms}\label{sec:trans}
+The last eight photographs change the question. How much of the structure
+of the input field can be retained if a monomial is multiplied by a circular
+or hyperbolic function? Page 58 begins with the identities
+\begin{align*}
+ \sin z&=(e^{\ii z}-e^{-\ii z})/(2\ii),  &
+ \sinh z&=(e^z-e^{-z})/2=-\ii\sin(\ii z),\\
+ \cos z&=(e^{\ii z}+e^{-\ii z})/2, &
+ \cosh z&=(e^z+e^{-z})/2=\cos(\ii z),\\
+ \tan z&=\frac{e^{\ii z}-e^{-\ii z}}{\ii(e^{\ii z}+e^{-\ii z})}, &
+ \tanh z&=\frac{e^z-e^{-z}}{e^z+e^{-z}}=-\ii\tan(\ii z).
+\end{align*}
+The even and odd exponential pairs provide numerators and denominators.
+Choosing the signs and the arguments selects the desired function.
+
+\subsection{The expression on the last page}
+The shorthand introduced on pp.~60--61 is itself the original scalar
+polynomial. With a coefficient row \(u\) and exponent table \(V\), write
+\begin{equation}\label{eq:Y}
+ Y(x;u,V)=\sum_{\gamma=1}^{|u|}u_\gamma
+                  \prod_{\beta=1}^M x_\beta^{V_{\beta\gamma}}.
+\end{equation}
+Here \(|u|\) counts the columns. The manuscript abbreviates this as
+\(Y(u,V)\). In one term use four such arguments,
+\[
+ C=Y(x;c,P),\quad D=Y(x;d,P),\quad
+ B=Y(x;f,Q),\quad G=Y(x;g,Q).
+\]
+The two numerator polynomials share an exponent table \(P\), and the two
+denominator polynomials share \(Q\). In dense form their respective column
+counts are \((N_P+1)^M\) and \((N_Q+1)^M\), where the two bounds on the
+individual powers may differ. Complex coefficients are allowed in these four arguments.
+
+For each component \(\ell\) and monomial \(\alpha\), choose selectors
+\(r_{\ell\alpha},s_{\ell\alpha}\in\{0,1\}\) and define
+\begin{equation}\label{eq:ratio}
+ R_{\ell\alpha}(x)=
+ \frac{\exp C+(-1)^{r_{\ell\alpha}}\exp D}
+      {\exp B+(-1)^{s_{\ell\alpha}}\exp G}.
+\end{equation}
+Page 65 writes the inner coefficient rows with a component index and leaves
+their dependence on the outer term implicit. The display allows them to be
+selected per term. Reusing the same rows recovers the shared-argument case.
+Page 59 first pairs \(C,D\) as \(Y_1,-Y_1\) and \(B,G\) as \(Y_2,-Y_2\).
+The four-polynomial form on p.~65 keeps the pairs available separately. In
+this notation the general equation on that page reads
+\begin{equation}\label{eq:general}
+ \boxed{\displaystyle
+ \dot x_\ell=\sum_{\alpha=1}^{(N+1)^M}
+ \big[a_{\ell\alpha}+b_{\ell\alpha}R_{\ell\alpha}(x)^{h_{\ell\alpha}}\big]\,
+ x^{k_\alpha}.}
+\end{equation}
+The power \(h_{\ell\alpha}\) acts on the quotient and \(b_{\ell\alpha}\)
+multiplies the result. Setting \(b_{\ell\alpha}=0\) omits the transcendental
+part of that term, so its quotient need never be evaluated. Setting
+\(a_{\ell\alpha}=0\) isolates the transcendental term times its monomial,
+as in the lower box on p.~65. For an active quotient the denominator must
+be nonzero. The notebook leaves the range of \(h_{\ell\alpha}\) unspecified.
+All the named functions below use \(h_{\ell\alpha}=1\). Other choices require
+a domain on which the chosen power is defined.
+
+\subsection{The twelve function selections}
+Let \(\theta=Y(x;u,V)\) have real coefficients, let \(w\) be a real
+amplitude, and put \(E_0(z)=e^z+e^{-z}\), \(E_1(z)=e^z-e^{-z}\).
+Take \(C=v,\ D=-v,\ B=z,\ G=-z\) in \eqref{eq:ratio}. Table~\ref{tab:selectors}
+gives choices for which \(bE_r(v)/E_s(z)\) is the indicated function times
+\(w\). Choosing zero arguments with the even selector gives \(E_0(0)=2\).
+The factors of \(\ii\) in \(b\) distinguish a sine from its reciprocal.
+
+\begin{table}[!ht]
+\centering
+\caption{Sign and amplitude choices in the exponential quotient for real \(\theta\).}
+\label{tab:selectors}\smallskip
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Function of \(\theta\)&\(v\)&\(z\)&\(r\)&\(s\)&\(b\)\\
+\midrule
+\(\sin\)  &\(\ii\theta\)&0&1&0&\(-\ii w\)\\
+\(\sinh\) &\(\theta\)&0&1&0&\(w\)\\
+\(\cos\)  &\(\ii\theta\)&0&0&0&\(w\)\\
+\(\cosh\) &\(\theta\)&0&0&0&\(w\)\\
+\(\sec\)  &0&\(\ii\theta\)&0&0&\(w\)\\
+\(\sech\) &0&\(\theta\)&0&0&\(w\)\\
+\(\csc\)  &0&\(\ii\theta\)&0&1&\(\ii w\)\\
+\(\csch\) &0&\(\theta\)&0&1&\(w\)\\
+\(\tan\)  &\(\ii\theta\)&\(\ii\theta\)&1&0&\(-\ii w\)\\
+\(\tanh\) &\(\theta\)&\(\theta\)&1&0&\(w\)\\
+\(\cot\)  &\(\ii\theta\)&\(\ii\theta\)&0&1&\(\ii w\)\\
+\(\coth\) &\(\theta\)&\(\theta\)&0&1&\(w\)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For a sine, the numerator arguments have opposite, purely imaginary
+coefficient rows, while \(f=g=0\) and \(s=0\). This makes the term
+\(-\ii w(e^{\ii\theta}-e^{-\ii\theta})/2=w\sin\theta\).
+For a hyperbolic cosecant, the numerator equals two, and opposite real
+denominator arguments give \(2w/(e^\theta-e^{-\theta})=w\csch\theta\).
+Page 63 writes equal real rows in the latter denominator. That choice
+with \(s=1\) makes the denominator identically zero. The opposite signs
+in the table follow the defining identity. For tangent and cotangent the
+notebook also sets \(P=Q\) and \(c=f=-d=-g\). Either selector then uses the
+same polynomial argument in both halves of the ratio.
+\src{pp.~58--65}
+
+\subsection{Where the derivation stops}
+The final note identifies \(Y(x;u,V)\) with a component of a polynomial field
+whose coefficient and exponent tables have been set to \(u,V\). Along a
+solution of that polynomial system, time-differentiating its right-hand side
+\(n-1\) times gives the \(n\)th derivative of the corresponding coordinate.
+This observation explains the hope that the polynomial result could be
+reused inside the exponentials.
+
+There is a dependence on the trajectory in that last step. If the actual field
+is \(\mathcal F\) from \eqref{eq:general}, then along its solution
+\(\dd Y/\dd t=\sum_j(\partial_jY)\mathcal F_j\).
+For example, \(\dd(e^C)/\dd t=e^C\sum_j(\partial_j C)\mathcal F_j\).
+Differentiating a quotient further introduces products of these factors and
+powers of its denominator. The argument derivative therefore uses the full
+field governing the trajectory. Pages 58--65 establish the representation
+\eqref{eq:general}. The notebook closes with the higher derivatives of the
+transcendental contribution posed as a problem. Its completed numerical step
+is \eqref{eq:step} for the autonomous polynomial system.
+\src{pp.~59--65}
+
+\section*{Machine checks and companion paper}
+\addcontentsline{toc}{section}{Machine checks and companion paper}
+The accompanying Lean~4 project gives a second proof of the polynomial
+construction. Its variables range over arbitrary finite dimensions, column
+counts and derivative orders. The theorem \file{Nomad.monomial_hessian}
+checks the successive partial derivatives on notebook p.~2. With one
+exponent vector per input column,
+\file{Nomad.lie_table} and \file{Nomad.collect_table} give
+\eqref{eq:rec} and \eqref{eq:group}. The theorem \file{Nomad.field_paths}
+expands the same polynomial into the choices and products of \eqref{eq:path}.
+A branch that differentiates a zero power has coefficient zero throughout
+its descendants. The theorem \file{Nomad.slide_bounds} checks the overlap
+limits for either ordering of the two table widths.
+
+Given a solution of \eqref{eq:ivp} on a nondegenerate interval,
+\file{Nomad.jet_derivative} identifies the polynomial at every order
+with the corresponding time derivative, including the one-sided derivatives
+at the endpoints. Theorems \file{Nomad.normalized_succ} and
+\file{Nomad.step_eq_taylor} give the factorial scaling and the Taylor evaluation
+in \eqref{eq:step}. In a separate file, \file{Nomad.selectors} verifies
+the twelve choices in Table~\ref{tab:selectors} on their indicated domains.
+
+The companion draft \emph{Local error bounds for consecutive NOMAD Taylor
+steps} derives an error enclosure from the next two orders and gives a
+PyTorch example with rational endpoints. Its theorem
+\file{Nomad.boxed_consecutive} bounds the error using only the field and
+derivative tables, a supplied box, and the step length, given a solution on the
+step. To check all proofs, run \file{lake build} from the \file{lean/}
+directory using its pinned Lean and mathlib v4.19.0 toolchain.
+
+\begin{thebibliography}{9}
+\addcontentsline{toc}{section}{References}
+\raggedright
+\bibitem{notebook}
+J. Atkinson. \emph{NOMAD: N-th Order M-Dimensional Nonlinear Diff Eq Solver}.
+Unpublished photographic notebook, \file{NOMAD_derivation.pdf}, 65 pages.
+Clean review dated 27 August 2017.
+\bibitem{jorba}
+À. Jorba and M. Zou. A software package for the numerical integration of
+ODEs by means of high-order Taylor methods. \emph{Experimental Mathematics}
+\textbf{14} (2005), 99--117.
+\href{https://doi.org/10.1080/10586458.2005.10128904}{doi:10.1080/10586458.2005.10128904}.
+\bibitem{pal}
+A. P\'al and \'A. S\"uli. Solving linearized equations of the \(N\)-body
+problem using the Lie-integration method. \emph{Monthly Notices of the Royal
+Astronomical Society} \textbf{381} (2007), 1515--1526.
+\href{https://doi.org/10.1111/j.1365-2966.2007.12248.x}{doi:10.1111/j.1365-2966.2007.12248.x}.
+\bibitem{carleman}
+S. V. Chermnykh. Carleman linearization and normal forms for differential
+systems with quasi-periodic coefficients. \emph{SpringerPlus} \textbf{5}
+(2016), article 1347, Proposition 4.
+\href{https://doi.org/10.1186/s40064-016-3015-6}{doi:10.1186/s40064-016-3015-6}.
+\end{thebibliography}
+
+\ifnotebooknotes
+\appendix
+\section{Notes in the order of the photographs}\label{app:leaves}
+Page numbers below refer to the collated notebook \cite{notebook}. The main
+text consolidates repeated algebra. This appendix keeps the working remarks,
+changes of notation, discarded approaches and intermediate checks near their
+original page numbers. Quotation marks denote short transcriptions. Other
+remarks are rendered in the notation of this edition. The cover is p.~1.
+The dated review begins on p.~3, immediately after the foundation sheet.
+
+\notegroup{Foundation and review}
+\leaf{2. The polynomial sheet.}{\(N\) is the order in a single variable and
+\(M\) is the number of dimensions. The row of \(K\) identifies the variable,
+the column its term. When differentiating in \(x_w\), retain precisely the
+indices for which \(K_{wi}\ne0\). For the second derivative the cases \(y=w\)
+and \(y\ne w\) have different coefficients and counts. The sheet draws the
+gradient as a column and the Hessian as an \(M\times M\) matrix. See
+\eqref{eq:grad}--\eqref{eq:hmixed}.}
+\leaf{3. “Notation description.”}{The 27 August review constructs \(K\) in
+blocks. In the original \(\hat k(d,b)\), each of \(N,N-1,\ldots,0\)
+multiplies a row of \((N+1)^{d-1}\) ones, and the concatenated row is
+repeated \(b\) times. Stack
+\(\hat k(M,1),\hat k(M-1,N+1),\ldots,\hat k(1,(N+1)^{M-1})\).
+The coefficient row selects which terms occur in that component.}
+\leaf{4. “More Notation Description.”}{The review specifies an autonomous
+multivariate polynomial system, differentiates it twice beyond the input
+equation, and defines \(\delta_{ij}=\delta[i-j]\). The remark at the foot of
+the page is that “the repeating summations are cumbersome to write!”}
+\leaf{5. The multiple summation.}{There are \(n-1\) choices of \(j\) and
+\(n-1\) of \(i\) in addition to \(\alpha\). In the dense table every \(i\)
+has \((N+1)^M\) possibilities. At \(n=1\) both inner sums are marked
+“(i.e. no summation).”}
+\leaf{6. “Notation complete, solution.”}{The coefficients, the successive
+powers brought down by differentiation, and the final power of each
+\(x_\beta\) are grouped separately. A margin line spells out the third-order
+exponent \(K_{\beta\alpha}+K_{\beta i_2}-\delta_{\beta j_2}
++K_{\beta i_1}-\delta_{\beta j_1}\). The last line is the general product
+in \eqref{eq:three}.}
+\leaf{7. “Series Solution.”}{Evaluate the derivatives at \(t_0\) and multiply
+each by \((t-t_0)^n/n!\). The review estimates a dense box of
+\([2^{n-1}N+1]^M\) terms and remarks that even small \(M\) makes this
+allocation impractical at large \(n\). Many columns are absent in the input
+because the coefficient table has “many zeros!”}
+\leaf{8. Preparing the matrices.}{Parse the input field, choose its \(K\),
+remove paired all-zero coefficient columns and call the survivors
+\(\hat a(1),\hat k(1)\). The hats subsequently label the derivative order.
+The contribution on the bottom line uses the old coefficient, the old power
+and the \(j\)th field coefficient. The differentiated power's row is clarified
+in \eqref{eq:rec}.}
+\leaf{9. “Alg. Continued.”}{Evaluate the \(n\)th derivative from its new
+coefficient and exponent tables. The computational shortcut is “an operation
+similar to convolution.” The concern is that computing the new tables
+“term by term is horrendously inefficient.” The review directs the reader to the other notebook
+for an example and proposes dividing the coefficient by the current order
+as the Taylor series is constructed. It ends, “This concludes review of
+original NOMAD.”}
+
+\notegroup{Working out the derivatives}
+\leaf{10. A single scalar polynomial.}{The original derivation begins again
+with \(P(x)\) and the block construction of \(K\). If \(a_i=0\), its term
+vanishes. This observation later becomes a whole-column test for a vector
+of coefficients.}
+\leaf{11. The problem statement.}{“Things are about to get messy.”
+Each equation \(\dot x_\ell\) gets its own row \(a^\ell_i\) over the shared
+\(K\). The boxed task is to find the derivative of arbitrary order for any
+output coordinate \(\ell\).}
+\leaf{12. A single product.}{“Sufficient to examine how” the monomial
+evolves under repeated differentiation. The first application peels off
+\(x_1^{k_1}\), leaving \(x_1^{k_1}(x_2^{k_2}\cdots x_M^{k_M})'\)
+and \(k_1x_1^{k_1-1}\dot x_1x_2^{k_2}\cdots x_M^{k_M}\).
+The trial formula at the bottom retains an extra copy of the original product.}
+\leaf{13. Closing the product rule.}{The accumulated outer terms are called
+\(F\) temporarily while the final two factors are differentiated. The
+“Whoops...” correction accounts for exactly one differentiated factor per
+summand. Substituting the polynomial for each \(\dot x_j\) yields
+\eqref{eq:one}.}
+\leaf{14. Replacing the inner index.}{The unmatched product is crossed out.
+The note “\(i_\alpha\) is confusing notation” prompts a rewrite using a
+separate column index \(\beta\) for the inserted right-hand side.}
+\leaf{15. Combining powers.}{Expand the inner polynomial against the old
+monomial. The two powers of each variable add, with a single Kronecker
+subtraction in the differentiated coordinate. This puts the second derivative
+back in polynomial form.}
+\leaf{16. What still depends on time?}{Braces label the old coefficients
+and powers “time indep” and the product in \(x\) “time dep.” The latter
+alone has to be differentiated for the third derivative.}
+\leaf{17. A second product expansion.}{The substitution \(\beta=i_\alpha\)
+relocates the previous field-column index. The page spells out how each of
+the \(M\) combined powers, in turn, brings down its exponent and a factor
+\(\dot x_j\).}
+\leaf{18. The third derivative.}{The last state derivative is expanded as
+another field sum. The boxed expression contains three original powers in
+each final exponent and two Kronecker subtractions. Its new scalar multiplier
+is the combined exponent from the previous differentiation.}
+\leaf{19. A prediction.}{The side note uses a superscript on \(a\) and \(k\)
+as a row index. Keeping the state component as a subscript avoids confusing
+it with an exponent. The fourth-derivative pattern is written before the
+calculation and subsequently marked “correct!”}
+\leaf{20. Testing the prediction.}{Set
+\(\hat k=k_\alpha+k_{i_1}+k_{i_2}-e_{j_1}-e_{j_2}\).
+The old expression becomes \(x^{\hat k}\). Its product expansion has exactly
+the form already worked out on pp.~12--14.}
+\leaf{21. Recognizing the pattern.}{Replace \(\dot x_{j_3}\) by its
+polynomial and restore the full expression for \(\hat k\). The coefficient
+gains \(\hat k_{j_3}A_{j_3 i_3}\) and the exponent gains
+\(k_{i_3}-e_{j_3}\). The handwritten celebration ends with “the whole thing!”}
+\leaf{22. “Testing before going farther.”}{For \(\dot x=y^2-x\), mark
+\(a_7=1,a_6=-1\). For \(\dot y=x^2-y\), mark \(a_3=1,a_8=-1\).
+All other entries in each row are zero. These are the one-based indices
+in the full nine-column table of Section~\ref{sec:example}.}
+\leaf{23. Counting sums.}{One initial column and two new indices for each
+subsequent differentiation give \(2n-1\) summations. The sheet distinguishes
+the \(M\)-valued \(j\)'s from the \((N+1)^M\)-valued \(i\)'s. The clean
+review fixes the lengths of the two lists at \(n-1\).}
+\leaf{24. Renaming the indices.}{The old outer \(i\) becomes \(\alpha\) and
+the product index \(j\) becomes \(\beta\). Successive coordinate indices
+become \(j_1,j_2,j_3\), with matched field columns \(i_1,i_2,i_3\);
+\(\ell\) stays fixed. All four derivatives are rewritten under this convention.}
+\leaf{25. Array evaluation.}{The columns of the state array repeat the same
+state, a “structure only for convenience of code!” Elementwise powers followed
+by column products give \(\bar X_\alpha=x^{k_\alpha}\). The page frames
+\(a^\ell_\alpha\bar X_\alpha\) as a single contribution and its sum over
+\(\alpha\) as the component derivative.}
+\leaf{26. Factoring the second derivative.}{Alongside the first four
+derivatives the notes factor a term of \(x_\ell''\) into two field summands and
+\(K_{j\alpha}/x_j\). The extra column subscript on the identical state copies
+can be dropped, which frees the \(i_1\)-sum to give \(F_j\).
+Equation~\eqref{eq:one} keeps all powers nonnegative wherever the
+differentiated term survives.}
+\leaf{27. Factoring the third derivative.}{Arrows match each \(a\) with
+a monomial \(\bar X\). Where the selected coordinates are nonzero the
+summand can be written as the three component terms
+\((A_{\ell\alpha}x^{k_\alpha})(A_{j_1i_1}x^{k_{i_1}})
+ (A_{j_2i_2}x^{k_{i_2}})\)
+times \(K_{j_1\alpha}(u_1)_{j_2}/(x_{j_1}x_{j_2})\).
+Equation~\eqref{eq:d3} gives its polynomial form on the whole state space.}
+\leaf{28. “Notation Guide.”}{The equality of the state copies and the
+distinction between one summand and the full derivative are both marked
+“critical importance.” The summed column labels cover the width of the
+exponent table. \(M\) counts state rows.}
+\leaf{29. Prior factors under a brace.}{The third and fourth derivatives
+are annotated to show which factors come from the preceding derivative.
+Set \(j_0=\ell,\ i_0=\alpha\), and suppress the initial delta correction
+using a discrete step. A side note notices the awkward product limit at
+\(n=1\).}
+\leaf{30. The boxed general result.}{An empty product contributes one.
+The displayed product of coefficients, product of exponent sums, and
+monomial with accumulated powers is reproduced by
+\eqref{eq:path}--\eqref{eq:three}. The field in the lower box is its
+first-order base case.}
+
+\notegroup{Finding the iterative computation}
+\leaf{31. Regrouping as a partial derivative.}{The original \(a^\ell_\alpha\)
+has to sit inside the derivative of the summand. Collecting the inner field
+sum gives \(\sum_{\alpha,j}\partial_j(A_{\ell\alpha}x^{k_\alpha})F_j\).
+The page ends, “Need recursive construction of higher order.”}
+\leaf{32. Absorbing two summations.}{The \(i_2\)-sum is \(F_{j_2}\).
+For a fixed previous term, the power brought down by \(\partial_{j_2}\)
+is already known. Thus the \(j_1,i_1\) choices can be absorbed into a new
+column label. The new coefficient is
+\(A_{\ell\alpha}A_{j_1i_1}K_{j_1\alpha}\), paired with
+\(k_\alpha+k_{i_1}-e_{j_1}\).}
+\leaf{33. “Only 2 sums!”}{With each old polynomial already stored, the
+chain rule sums over its terms and the differentiated coordinate. The
+component \(F_j\) still has its own column sum when expanded. The observation in the margin is “only 2 sums! w/ recursive computation!” A recursive
+loop sketch is followed by the word “iterative” over “recursive” and a
+new aim, the repeated construction of coefficient and exponent tables.}
+\leaf{34. The dense allocation.}{Successive maximum powers are pencilled
+in as \(2N,4N,8N,\ldots\). The prohibitive size of the corresponding dense
+box motivates an “adaptive algorithm that minimizes the size of \(K\)
+based on coefficients \(a\).” The count and a tighter bound appear in
+Section~\ref{sec:slide}.}
+\leaf{35. Parsing and compression.}{Parse \(a\) in the ordering of the
+\((M,N)\) exponent table. The note says “parser needs some more work, good
+for now.” A column with zero in every output row can be removed from both
+tables. The next task is to relate \(\hat a,\hat k\) to the derivative order.}
+\leaf{36. Checking the second derivative again.}{The product rule is
+worked from the factors \(x_1^{k_1},x_2^{k_2},\ldots\) back to
+\(\sum_{\alpha,j}A_{\ell\alpha}K_{j\alpha}x^{k_\alpha-e_j}\dot x_j\).
+This confirms which old exponent is used when filling a coefficient column.}
+\leaf{37. When do two terms coincide?}{Two triples can share a new column
+precisely when \(k_\alpha+k_i-e_j=k_{\alpha'}+k_{i'}-e_{j'}\) in every
+coordinate. The corresponding products \(A_{\ell\alpha}A_{ji}K_{j\alpha}\)
+then add. This question leads directly to the lookup rule.}
+\leaf{38. A discarded matrix product.}{The page tries \(AK^\mathsf{T}A\)
+and crosses it out. Transposing \(K\) relocates an entry without changing
+which variable and monomial it denotes. Ordinary matrix multiplication
+contracts the column label before the new exponent has been determined.}
+\leaf{39. Block strides.}{The drawn rows of \(K\) are constant in descending
+blocks. With stride \(s=(N+1)^{M-j}\), the pencilled identity
+\(K_{ji}=K_{j,i+\gamma s}+\gamma\) applies while the digit stays within the
+same descending cycle. Crossing a cycle wraps the digit, as in \eqref{eq:digit}.}
+\leaf{40. The upper corner.}{Even when both input columns are
+\((N,\ldots,N)\), differentiating lowers one coordinate. The exponent with
+\emph{all} coordinates \(2N\) is therefore absent from the second derivative.
+This identifies a guaranteed zero slot in the full box.}
+\leaf{41. The lower corner.}{Choosing the constant as the differentiated
+monomial gives zero because every pulled-down exponent vanishes.
+This conclusion concerns that contribution. Another pair can produce a
+constant output. For example, \(\dot x=1+x\) gives \(x''=1+x\).}
+\leaf{42. Tabulating the candidates.}{Rows are arranged by fixed outer
+column \(\alpha\) and chosen coordinate \(j\), listing every inserted column
+\(i\). In the last outer block the differentiated monomial is the constant
+column, so its whole block contributes zero.}
+\leaf{43. Opening up the products.}{The first blocks of p.~42 are written
+coordinate by coordinate. The \(-1\) moves from the exponent of \(x_1\)
+to that of \(x_2\), and eventually to \(x_M\), as the chosen \(j\) changes.}
+\leaf{44. Looking up collisions.}{Monomials coincide as polynomials when
+all exponents match. With the same outer column and \(j\ne g\), another
+inserted column must satisfy \(k_f=k_i-e_j+e_g\).
+On the full input grid this requires \(K_{ji}\ge1\) and
+\(K_{gi}\le N-1\). Equality at one numerical state would be insufficient
+for collecting polynomial coefficients.}
+\leaf{45. A two-dimensional output grid.}{For \(M=N=2\), the two input
+tables have nine columns and a dense second-derivative box has 25. The
+upper neighbors \((4,3)\) and \((3,4)\) are marked “highest unique.”
+The corner \((4,4)\) is unreachable. The tentative mark at \((0,0)\)
+is subject to the distinction on p.~41.}
+\leaf{46. Coordinates constant within a block.}{The sheet pursues a
+column-index formula through repeated first-row values. For two variables,
+columns \(u(N+1)+1,\ldots,(u+1)(N+1)\) all have first coordinate \(N-u\),
+\(0\le u\le N\). Equation~\eqref{eq:digit} gives the general row stride.}
+\leaf{47. Shifting a row.}{Two copies of the nine-column table are aligned.
+Subtracting \(e_1\) from the field columns changes their first row to
+\(1,1,1,0,0,0,-1,-1,-1\), leaving the second row untouched.
+The subsequent addition must use the aligned current column.}
+\leaf{48. The first slide.}{The sideways photograph introduces the circled
+plus, the direction of travel, and “Lookup \(\to\) Store.” The next alignment
+can produce two different output locations. The note calls for a manual
+test with the reduced matrices of \eqref{eq:xy}. Its index lists are
+typeset in Section~\ref{sec:slide}.}
+\leaf{49. The \(j=1\) pass.}{The page traces all seven alignments of the
+reduced four-column tables. It crosses out invalid exponents and discards
+zero vectors. The four surviving keys and their coefficient vectors are
+\((1,0):(1,0)\), \((0,2):(-1,0)\), \((1,2):(0,2)\), and
+\((2,0):(0,-2)\).}
+\leaf{50. Unequal widths.}{The next slide uses the six columns of the
+second-derivative table against four field columns. The array called
+\emph{ali} holds \(\alpha\) and \(i\) in two rows. The edges have increasing
+and decreasing lengths, with three full overlaps in the middle. The same
+sheet records the four-by-four case for comparison.}
+\leaf{51. The \(j=2\) pass.}{Here the surviving keys and vectors are
+\((2,0):(0,-1)\), \((2,1):(2,0)\), \((0,1):(0,1)\), and
+\((0,2):(-2,0)\). Combine these with p.~49 and read off \eqref{eq:xyD2}.
+The page marks the result “Correct!”}
+\leaf{52. Counting and locating the tail.}{For widths \(P\ge Q\) the full
+list has \(PQ\) columns. Before the decreasing overlaps begin, the cumulative
+count is \(\sum_{r=1}^{Q-1}r+Q(P-Q+1)=Q(2P-Q+1)/2\).
+The handwritten offset checks give 10 for \(P=Q=4\) and 18 for \(P=6,Q=4\).}
+\leaf{53. The algorithm in words.}{Slide \(K-e_j{\bf1}^\mathsf{T}\) across
+the current exponent table for every \(j\), keeping the pair of indices. “If the sum is valid” in all coordinates, compute its coefficient from the
+indices. The instruction for equal exponents is to “sum” their coefficients
+“up if it repeats.” Remove entries with zero vectors, then sort the remaining exponents
+“while maintaining the pairs.”}
+
+\notegroup{Scaling the series}
+\leaf{54. Finite precision.}{“Numerical issues when number of derivatives
+get large!” The notes speak of the spacing of large values representable
+in double precision. Hats denote the new derivative table, tildes its
+predecessor, and the plain \(a,k\) denote the input field. The explicit
+path expression is inserted into the Taylor series at \(x=x(t_0)\).}
+\leaf{55. The source of large numbers.}{Compare the compact derivative sum
+with its expanded triple sum over \(\alpha,j,i\). Both the raw coefficients
+and \(n!\) can become very large. The margin associates the concern with
+orders around 50--100. This observation about scale depends on the field
+and the arithmetic.}
+\leaf{56. Unfolding the division.}{Expand \(n!=n(n-1)\cdots 2\) as the
+coefficient construction is traced backward. The last line displays the
+initial coefficient divided by \(1!\), followed by factors divided by
+\(2,3,\ldots,n\). The two equivalent placements of the final divisor
+are given in Section~\ref{sec:taylor}.}
+\leaf{57. “The factorial will happen gradually.”}{The displayed series
+uses a final \(1/n\) with a partially scaled table. The accompanying note
+says that the division will “help control the growth of the elements” in the
+coefficient table and keep them within useful floating-point range.}
+
+\notegroup{The extension sheets}
+\leaf{58. Regular and hyperbolic functions.}{Use exponentials of \(jx\) and
+\(-jx\) for sine, cosine and tangent, then use imaginary arguments for sinh,
+cosh and tanh. The notebook writes \(j=\sqrt{-1}\), rendered \(\ii\) in
+Section~\ref{sec:trans} to free \(j\) for coordinate indices.}
+\leaf{59. A new term.}{The first proposed term is
+\(b[(e^{Y_1}+(-1)^re^{-Y_1})/(e^{Y_2}+(-1)^se^{-Y_2})]^h\).
+\(Y_1,Y_2\) are multivariate polynomials. Bits \(r,s\) select a sum or a
+difference in each pair. The note about weighted exponential combinations
+uses a quotient for tangent and the reciprocal functions.}
+\leaf{60. Four polynomial exponents.}{The sheet writes the coefficients
+\(c,d\) over a shared table \(P\) and \(f,g\) over \(Q\), then substitutes
+the full polynomial sums into the quotient. An early sine prescription is
+crossed out. The surviving shorthand \(Y(x;u,V)\) counts the monomials by
+the cardinality of the coefficient row.}
+\leaf{61. Selecting sine.}{Set \(b=0\) to omit the transcendental contribution.
+For sine take \(f=g=0,\ s=0\), hence denominator \(2\). Take \(r=1\),
+opposite purely imaginary \(c,d\), and a purely imaginary prefactor. The
+margin identifies the desired real amplitude as the coefficient of sine.
+Table~\ref{tab:selectors} makes its sign explicit.}
+\leaf{62. Selecting sinh, cos and cosh.}{All three keep the denominator at
+two. Sinh uses a difference of exponentials with opposite real arguments.
+Cosine and cosh use sums, with opposite imaginary and real arguments,
+respectively. The prefactor is real. The sheet asks for at least one nonzero argument
+coefficient in its selection rules.}
+\leaf{63. Selecting reciprocals.}{Set \(c=d=0,\ r=0\) so the numerator
+equals two. An even denominator yields sec or sech, and an odd denominator
+yields csc or csch. Circular cosecant uses a purely imaginary prefactor.
+The real-denominator sign for csch is the correction recorded after
+Table~\ref{tab:selectors}.}
+\leaf{64. Selecting tan, tanh, cot and coth.}{Match the argument polynomials
+in numerator and denominator by taking \(c=f,\ c=-d,\ f=-g,\ P=Q\).
+The pair \((r,s)=(1,0)\) gives the tangent family, and \((0,1)\) gives the
+cotangent family. Pure imaginary arguments yield the circular functions,
+real arguments the hyperbolic ones. The sheet concludes, “All typical forward regular \& hyperbolic trig functions
+can be expressed w/ this new term!”}
+\leaf{65. “General equation.”}{The top line includes both \(a\) and the
+powered quotient in the coefficient of each monomial. The starred system
+\(x^*\) denotes the polynomial case for which the \(n\)th derivative is
+known. The lower box sets out the remaining transcendental part and
+identifies \(Y(u,V)\) as a polynomial right-hand side at \(a=u,\ k=V\).
+The arrows end at this identification. Section~\ref{sec:trans} states which
+trajectory is required when it is differentiated.}
+
+\paragraph{Editorial conventions.}
+\(A_{\ell i},K_{\beta i}\) render the notebook's \(a_i^\ell,k_i^\beta\).
+The induction proof, sharper degree bound, error discussion, independent
+arithmetic check and literature comparisons are editorial additions.
+Substantive readings concern the differentiated row (p.~8), constant
+terms (pp.~41, 45), factorial scaling (pp.~56--57) and the csch sign (p.~63).
+
+\clearpage
+\section{Implementation notes}\label{app:code}
+The MATLAB comparison uses the supplied sources. The PyTorch comparison records
+the port as received and the subsequent corrections. Numerical checks used
+PyTorch 2.6.0 on CPU. The author reports faster
+execution with the PyTorch port. This edition supplies no comparative timings.
+
+\paragraph{MATLAB.}
+The recursive table constructor in \file{matlab/development_assistance_scripts/}
+(\file{kExps.m}) generates the descending blocks of \eqref{eq:digit}.
+The parser and the early Taylor routine are in
+\file{matlab/backup_and_parser/}. In \file{nomadTaylor.m} the order-\(n\)
+derivative is divided explicitly by \file{factorial(i)}.
+In \file{matlab/optimized/}, \file{nomad_optim.m} constructs \emph{ali},
+forms the shifted columns, groups equal rows of the transposed exponent
+table, and reverses the \emph{columns} of both output matrices.
+\file{nomadTaylor_optim.m} starts from the first derivative, divides the old
+coefficient matrix by the new order when constructing orders \(2,\ldots,p\),
+and evaluates every polynomial at the same symbolic initial state.
+
+The zero-column test in \file{nomad_optim.m} takes the arithmetic sum
+down the rows. A column such as \((1,-1)^\mathsf{T}\) then disappears even
+though it contributes to both equations. The exact rule in the notes is
+\(\forall\ell,\ c_\ell=0\), applied also after contributions with identical
+exponents have been added. The three-region index construction in the code
+assumes the current width is at least the field width, as on p.~50. The
+offset limits in Section~\ref{sec:slide} also cover shrinking support.
+
+\paragraph{PyTorch port as received.}
+\file{pytorch/nomad_solver.py} precomputes the derivative tables, groups
+exponents with \file{torch.unique}, and evaluates a batch of initial states.
+Three operations in the historical port explain the second-order discrepancies.
+At zero-based loop index \(i\), the constructor divided the previous
+table by \(i\) while constructing derivative \(i+1\). This gives the partial
+factorial convention on p.~57. The evaluation omitted the remaining factor.
+After grouping, \file{torch.flip(..., dims=(0,))} reversed the coordinate
+rows of both matrices. For \(F=(x^2,0)\), the raw second derivative
+\((2x^3,0)\) became \((0,2y^3)\). Finally, \file{step} evaluated each term
+at the partial sum from the preceding order. For \(F(x)=x\), \(z=1\), this
+gave \(1+h+(1+h)h^2\), or \(1.328125\) at \(h=1/4\).
+Working arrays also inherited the default dtype after the input tables had been
+converted to double.
+
+\paragraph{PyTorch corrections accompanying the formalization.}
+The port now divides by the new order \(i+1\), reverses columns after
+grouping, and evaluates every term at the beginning-of-step state.
+The scalar example returns \(1+h+h^2/2=1.28125\) at \(h=1/4\).
+For \(F=(x^2,0)\), the second Taylor coefficient is \((x^3,0)\).
+The overlap limits in Section~\ref{sec:slide} handle shrinking supports, and
+the coefficient buffers retain double precision. A positive pruning threshold
+discards candidates before collection and changes the recurrence.
+The comparison in \file{pytorch/test_nomad.py} measures mean trajectory error
+on \eqref{eq:xy}. The new regressions check coefficients and steps directly,
+with zero pruning threshold, in \file{pytorch/test_nomad_error_bounds.py}.
+
+\fi
+\end{document}

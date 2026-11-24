@@ -1,0 +1,268 @@
+% Standalone manuscript. Compile twice with pdflatex, or once with tectonic.
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,booktabs}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{pdftitle={Local error bounds for consecutive NOMAD Taylor steps},
+ pdfsubject={A companion to John Atkinson's polynomial ODE derivation}}
+\newcommand{\R}{\mathbb R}
+\newcommand{\F}{\mathcal D_F}
+\newcommand{\file}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\abs}[1]{\left|#1\right|}
+\newcommand{\norm}[1]{\left\lVert#1\right\rVert}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\setlength{\emergencystretch}{1.5em}
+\raggedbottom
+\begin{document}
+\begin{center}
+{\LARGE\bfseries Local error bounds for consecutive\\[.12em] NOMAD Taylor steps\par}
+\vspace{.65em}
+{\large Companion to John Atkinson's 2016--2017 NOMAD notebooks\par}
+\vspace{.2em}
+{\small Working draft for author review\par}
+\end{center}
+\begin{abstract}
+Two consecutive NOMAD steps, taken from the same state, differ by one
+explicitly computable Taylor term. We enclose the error of the lower-order
+step in a signed interval centered at that difference. The radius comes from
+one further normalized derivative polynomial on a box containing the
+solution. A strict inequality on the field coefficients verifies the box.
+Both endpoints can be computed rationally for a polynomial system with
+binary floating-point data, including the correction for rounding in the
+returned solver values. Lean checks the derivation and a concrete numerical
+enclosure. An example with a vanishing increment shows why the additional
+derivative is necessary for this guarantee.
+\end{abstract}
+
+\section{The error seen by two consecutive orders}
+Let \(x'=F(x)\) be an autonomous polynomial system in \(m\) real variables,
+with exact starting value \(x(a)=z\). Consider a forward step \(h>0\).
+Write \(H_{0,\ell}(y)=y_\ell\), \(H_{n+1,\ell}=\F H_{n,\ell}\), where
+\(\F P=\sum_j F_j\,\partial_j P\). The NOMAD construction~\cite{notebook}
+computes the coefficients and exponents of these polynomials. Its normalized
+tables and its degree-\(p\) step satisfy
+\begin{equation}\label{eq:step}
+ C_{n,\ell}=H_{n,\ell}/n!,\qquad C_{n+1,\ell}=\frac{\F C_{n,\ell}}{n+1},
+ \qquad T_p(z,h)=\sum_{n=0}^{p}h^n C_n(z).
+\end{equation}
+All terms use the same \(z\). Define the signed local error
+\(e_{p,\ell}=x_\ell(a+h)-T_{p,\ell}(z,h)\) and the observable increment
+\begin{equation}\label{eq:delta}
+ d_{p,\ell}=T_{p+1,\ell}(z,h)-T_{p,\ell}(z,h)
+             =h^{p+1}C_{p+1,\ell}(z).
+\end{equation}
+
+\begin{theorem}\label{th:main}
+Suppose a solution exists on \([a,a+h]\) and
+\(\abs{C_{p+2,\ell}(x(t))}\le B_{p+2,\ell}\) throughout that interval.
+Set \(R_\ell=h^{p+2}B_{p+2,\ell}\). Then
+\begin{align}
+  |e_{p+1,\ell}| &\le R_\ell, &
+  d_{p,\ell}-R_\ell &\le e_{p,\ell}\le d_{p,\ell}+R_\ell,\label{eq:signed}\\
+  \max\{0,|d_{p,\ell}|-R_\ell\}
+     &\le |e_{p,\ell}| \le |d_{p,\ell}|+R_\ell. &&\label{eq:absolute}
+\end{align}
+\end{theorem}
+\begin{proof}
+Along a solution, the chain rule gives
+\(\frac{d}{dt}P(x(t))=(\F P)(x(t))\). Induction therefore gives
+\(x^{(n)}_\ell(t)=n!C_{n,\ell}(x(t))\). Scalar Taylor's theorem at order
+\(p+1\) supplies a \(\xi_\ell\in(a,a+h)\) such that
+\(e_{p+1,\ell}=h^{p+2} C_{p+2,\ell}(x(\xi_\ell))\).
+Each coordinate can have its own \(\xi_\ell\).
+Now \(e_{p,\ell}=d_{p,\ell}+e_{p+1,\ell}\). The triangle and reverse
+triangle inequalities give \eqref{eq:absolute}.
+\end{proof}
+
+For a component tolerance \(\epsilon_\ell\), the upper endpoint in
+\eqref{eq:absolute} certifies that the step meets tolerance whenever it is at
+most \(\epsilon_\ell\). A lower endpoint above \(\epsilon_\ell\) certifies a
+miss. When the interval straddles the tolerance, an additional order or a
+smaller step can resolve the comparison.
+
+\clearpage
+\section{Obtaining the radius from NOMAD tables}
+For radii \(r_j>0\), define the closed box
+\(Q=\{y: |y_j-z_j|\le r_j\text{ for all }j\}\) and put
+\(\rho_j=|z_j|+r_j\). For a scalar polynomial
+\(P(y)=\sum_u c_u y^u\), define
+\begin{equation}\label{eq:maj}
+  \mathcal B(P,\rho)=\sum_u |c_u|\prod_j\rho_j^{u_j}.
+\end{equation}
+Use the convention \(0^0=1\) for an absent factor. Each monomial is
+bounded by the corresponding nonnegative product, so
+\(\abs{P(y)}\le\mathcal B(P,\rho)\) for \(y\in Q\).
+Collecting equal exponents before taking absolute values preserves
+cancellations and can reduce the radius.
+
+\begin{proposition}\label{prop:box}
+Set \(M_j=\mathcal B(F_j,\rho)\). If
+\begin{equation}\label{eq:box}
+                  h M_j < r_j\qquad (1\le j\le m),
+\end{equation}
+the IVP has a unique solution throughout the step and that solution stays
+in the box. In Theorem~\ref{th:main} one may use
+\(B_{p+2,\ell}=\mathcal B(C_{p+2,\ell},\rho)\).
+\end{proposition}
+\begin{proof}
+A polynomial field is locally Lipschitz, so a unique maximal solution starts
+at \(z\). If it first touches a face at time \(u\le a+h\), then before
+that time its speed in coordinate \(j\) is at most \(M_j\).
+Integration gives \(\abs{x_j(u)-z_j}\le(u-a)M_j\le hM_j<r_j\)
+for every \(j\), contradicting contact. The same estimate holds up to any
+earlier end of the maximal interval. On the compact box the speed is
+bounded, so the solution then has a limit there and extends by local
+existence. This gives existence through the endpoint. Applying \eqref{eq:maj}
+to the normalized derivative polynomial now gives the asserted value of
+\(B_{p+2,\ell}\). See also the local existence and continuation theorems
+in Teschl~\cite{teschl}.
+\end{proof}
+
+The procedure requires the field table and two more orders beyond \(p\).
+The table at order \(p+1\) is evaluated at \(z\) with its signs. At order
+\(p+2\) one sums the absolute coefficients of each row against \(\rho^u\).
+Both operations use the same exponent columns as the integrator.
+The box condition is sufficient. A failure of \eqref{eq:box} leaves this
+step uncertified. Taking a shorter step with the same radii reduces both
+\(hM_j\) and the remainder radius.
+
+\paragraph{An increment can hide the entire error.}
+For any \(p\ge1\), take \(u'=1,\ v'=u^{p+1}\) with \((u,v)(0)=(0,0)\).
+Then \(u(h)=h\) and \(v(h)=h^{p+2}/(p+2)\). Both orders return \((h,0)\).
+Their difference is zero in every coordinate although the exact error in
+\(v\) is positive. Here \(C_{p+2,v}=1/(p+2)\) everywhere. The radius in
+\eqref{eq:signed} gives the exact magnitude of the missed term. Conversely,
+when \(C_{p+1,\ell}(z)\ne0\), \eqref{eq:signed} gives
+\(e_{p,\ell}/d_{p,\ell}=1+O(h)\) as \(h\downarrow0\) in a fixed box.
+
+\section{More orders and floating-point endpoints}
+For \(q\ge p\), accumulate the block
+\(D_{p,q}=\sum_{n=p+1}^{q} h^n C_n(z)\), with the empty sum equal to zero.
+Since \(e_{p,\ell}-D_{p,q,\ell}=e_{q,\ell}\), the same proof yields
+\begin{equation}\label{eq:block}
+ \abs{e_{p,\ell}-D_{p,q,\ell}}
+   \le h^{q+1}\mathcal B(C_{q+1,\ell},\rho).
+\end{equation}
+Each extra derivative can move the center of the interval as well as change
+its radius. Every valid interval encloses the same signed lower-order error,
+so their intersection is valid. The componentwise bounds also give
+\(\norm{e_p}_\infty\le\max_\ell(|d_{p,\ell}|+R_\ell)\).
+
+\clearpage
+\paragraph{The returned PyTorch value.}
+Write \(Y_p,Y_{p+1}\) for the actual floating-point results of two calls to the
+solver from the same represented initial state. Interpret those finite
+outputs as exact binary rationals. Let
+\(\widehat d=Y_{p+1}-Y_p\), taking the difference in exact arithmetic, and
+let \(s=T_{p+1}(z,h)-Y_{p+1}\) be the signed correction computed by a rational
+evaluation of the polynomial tables. Coordinatewise,
+\begin{equation}\label{eq:rounded}
+  \boxed{\quad x(a+h)-Y_p\ \in\ \widehat d+s+[-R,R],\qquad
+          x(a+h)-Y_{p+1}\ \in\ s+[-R,R].\quad}
+\end{equation}
+Here \([-R,R]\) denotes a componentwise interval. Indeed, subtracting
+\(\widehat d+s\) from the low-order error gives exactly \(x(a+h)-T_{p+1}\).
+The correction also accounts for rounding that occurs while constructing the
+tables. As a simple test, take \(x'=1, z=1, h=2^{-54}\). In binary64 both
+orders round to \(1\). The Taylor remainder is zero and the correction is
+\(2^{-54}\). The signed interval for each actual output is the singleton
+\(\{2^{-54}\}\).
+
+\paragraph{Local and accumulated error.}
+Each enclosure starts an exact trajectory at the supplied state. At a later
+numerical step this state can differ from the original IVP trajectory.
+For example, if the flow from the two initial states has Lipschitz bound
+\(L_n\) over step \(n\), an existing global error bound \(E_n\) and a local
+endpoint bound \(\tau_n\) give \(E_{n+1}\le L_n E_n+\tau_n\) by the triangle
+inequality. The certificates below compute \(\tau_n\). A user certifying
+a full trajectory must also enclose both flows and supply their stability
+bounds.
+
+\section{An interval that can be checked by hand}
+Take \(x'=x^2\), \(z=1\), \(h=1/8\), and orders two and three.
+Here \(C_n(y)=y^{n+1}\) for every \(n\ge0\), since
+\(y^2\partial_y(y^{n+1})/(n+1)=y^{n+2}\).
+With \(r=1/2\) one gets \(\rho=3/2\), \(M=9/4\), and \(hM=9/32<1/2\).
+The outputs and interval are
+\begin{align*}
+  Y_2=T_2&=73/64, &Y_3=T_3&=585/512, &d_2&=1/512,\\
+  B_4&=(3/2)^5, &R&=243/131072, &s&=0.
+\end{align*}
+\begin{equation}\label{eq:example}
+       \frac{13}{131072}\ \le\ x(1/8)-Y_2\ \le\ \frac{499}{131072}.
+\end{equation}
+The exact solution \(x(h)=1/(1-h)\) gives error \(1/448\), which lies in this
+interval. The lower endpoint is positive, so the certificate also determines
+the sign of the error. Lean derives \eqref{eq:example} directly from the
+ODE and the starting state. The companion program obtains the same endpoints
+from actual calls to \file{NomadSolver.step}.
+
+\paragraph{The notebook's two-coordinate example.}
+For \(F(x,y)=(y^2-x,x^2-y)\) at \((1,2)\), use \(h=1/32\) and radii
+\((1/2,1/2)\). The speed bounds are \(31/4\) and \(19/4\), so both box
+tests pass. For orders three and four the exact increment is
+\(h^4(-91,-49)/24\), obtained from the fourth derivative in the notebook
+whitepaper. The test suite checks the rational order-four result in both
+coordinates. It also exercises duplicate input columns, shrinking derivative
+tables, opposite error signs, a zero field, and rejection at equality in
+\eqref{eq:box}.
+
+\clearpage
+\section{Reproducing the bounds}
+The accompanying Lean files and their mathematical roles are listed below.
+The project pins Lean~4 and mathlib to v4.19.0. The proof uses mathlib's
+scalar Taylor theorem with Lagrange remainder~\cite{mathlib}. Within-interval
+derivatives give the appropriate derivatives at both endpoints.
+\begin{center}\small
+\begin{tabular}{@{}lp{.53\linewidth}@{}}
+\toprule
+Declaration in namespace \file{Nomad} & Statement checked\\
+\midrule
+\file{field_paths}, \file{jet_derivative} & Expanded NOMAD polynomial and its time derivative interpretation.\\
+\file{normalized_succ}, \file{step_eq_taylor} & Factorial-scaled tables and the Taylor polynomial.\\
+\file{local_remainder}, \file{block_enclosure} & Scalar remainders for one order and for a block.\\
+\file{table_bound}, \file{stays_in_box} & Polynomial majorant and first-exit estimate.\\
+\file{boxed_consecutive} & Signed local enclosure from both tables and the box test.\\
+\file{absolute_enclosure}, \file{rounded_enclosure} & Absolute errors and transfer to the returned values.\\
+\file{Example.quadratic_certificate} & Both rational endpoints in \eqref{eq:example}.\\
+\bottomrule
+\end{tabular}
+\end{center}
+The interval theorems in Lean quantify over a solution of the ODE on the
+step. Proposition~\ref{prop:box} supplies existence and continuation in the
+paper. The CPU solver supplies both numerical endpoints. The companion
+module \file{nomad_error_bounds.py} reconstructs the normalized tables with
+Python's \file{Fraction}. The general Python program and PyTorch kernels are
+outside the Lean formalization. Exact fraction arithmetic in the certificate
+and tests applies to the field, initial state and step as represented on input.
+
+With Lean's toolchain manager and Python with PyTorch installed, run the
+following commands from the repository root. The example and tests use CPU
+and were checked with PyTorch 2.6.0.
+\begin{verbatim}
+(cd lean && lake exe cache get && lake build)
+python3 pytorch/nomad_error_bounds.py
+python3 -m unittest -b -v pytorch.test_nomad_error_bounds
+\end{verbatim}
+For other fields, call \file{certify_step(a, k, z, h, p, radii)}. Rows of
+\(a,k\) index the state coordinates and columns index the monomials. Use finite
+binary64 tensors for \(a,z\) and the radii, nonnegative integer exponents,
+a positive floating-point \(h\), and integer \(p\ge1\). The optional keyword
+\file{high_order=q} uses the longer block in \eqref{eq:block} for \(q>p\). Each returned record
+gives the signed low- and high-order intervals and the absolute low-order
+interval. The independent rational table construction is intended for small
+systems and modest orders, where its cost is practical.
+
+\begin{thebibliography}{9}\raggedright
+\bibitem{notebook} J. Atkinson.
+\emph{NOMAD: A Taylor solver for multivariate polynomial differential
+equations}. Companion edition of the 2016--2017 notebooks, \file{NOMAD.tex}.
+\bibitem{teschl} G. Teschl. \emph{Ordinary Differential Equations and
+Dynamical Systems}. American Mathematical Society, 2012, §§2.2 and 2.6.
+\href{https://www.mat.univie.ac.at/~gerald/ftp/book-ode/ode.pdf}{Author's edition}.
+\bibitem{mathlib} The mathlib community. \emph{Taylor's theorem}, mathlib4
+v4.19.0, declaration \file{taylor_mean_remainder_lagrange}.
+\href{https://github.com/leanprover-community/mathlib4/blob/v4.19.0/Mathlib/Analysis/Calculus/Taylor.lean}{Versioned source}.
+\end{thebibliography}
+\end{document}
