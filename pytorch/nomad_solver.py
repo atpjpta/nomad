@@ -14,8 +14,12 @@ class NomadSolver(torch.nn.Module):
         a: torch.Tensor,
         k: torch.Tensor,
         n: int=50,
+        coefficient_keep_threshold: float=0,
         device='cuda') -> None:
         super().__init__()
+
+        self.device = device
+        self.coefficient_keep_threshold = coefficient_keep_threshold
 
         # find the nonzero columns of a
         zeros_per_column = torch.sum((a == 0), dim=0)
@@ -69,8 +73,14 @@ class NomadSolver(torch.nn.Module):
                 self.a_hats[i_sub1_key]/i,
                 k,
                 self.k_hats[i_sub1_key],
-                device=device
+                self.coefficient_keep_threshold,
+                self.device
             )
+
+            print(f'on {i}')
+            print(ahat.shape)
+            print(khat.shape)
+            print()
 
             # because of the trick we are doing above where we divide a hat by i progressively
             # to compute the n! in the denominator of the taylor series, elements of ahat
@@ -100,7 +110,8 @@ class NomadSolver(torch.nn.Module):
         ahat: torch.Tensor,
         k: torch.Tensor,
         khat: torch.Tensor,
-        device='cuda'):
+        coefficient_keep_threshold,
+        device):
 
         # get number of rows (i.e. the number of dimensions for this system
         num_dims = k.shape[0]
@@ -225,7 +236,7 @@ class NomadSolver(torch.nn.Module):
 
         # remove any columns of ahat_new that are all zeros, and the corresponding columns of khat_new
         # find the nonzero columns of a
-        zeros_per_column = torch.sum((ahat_new == 0), dim=0)
+        zeros_per_column = torch.sum((torch.abs(ahat_new) <= coefficient_keep_threshold), dim=0)
         non_zero_cols = zeros_per_column != a.shape[0]
         ahat_new = ahat_new[:, non_zero_cols]
         khat_new = khat_new[:, non_zero_cols]

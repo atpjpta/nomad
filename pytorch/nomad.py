@@ -39,17 +39,17 @@ a = torch.Tensor(
 
 # define some initial conditions
 # (N, 1, batch_size)
-initial_conditions = torch.rand((2, 1, 20))
+initial_conditions = torch.rand((2, 1, 1))
 for i in range(initial_conditions.shape[-1]):
-    initial_conditions[0, 0, i] = 0 - np.sin(i*0.01)
-    initial_conditions[1, 0, i] = 0.0 + np.cos(i*0.01)
+    initial_conditions[0, 0, i] = -0.2# - np.sin(i*0.01)
+    initial_conditions[1, 0, i] = -0.8# + np.cos(i*0.01)
     #initial_conditions[2, 0, i] = 0.0 + torch.sin(initial_conditions[1, 0, i])
 initial_conditions = initial_conditions.to(device)
 
 # solve the diff eq
 solver = NomadSolver(a, k, n=50, device=device)
 solver = solver.to(device)
-x_traj, t, exec_times = solver(initial_conditions, tstep=0.001, print_time_interval=500)
+x_traj, t, exec_times = solver(initial_conditions, tstep=0.001, t_end=10, print_time_interval=500)
 
 # get some stats
 avg_step_time = np.mean(exec_times)

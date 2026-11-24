@@ -20,6 +20,8 @@ khatCols = size( khat, 2 );
 %
 ali = zeros( 2, kCols*khatCols );
 
+ali
+
 % initialize last end index to 0, greatly simplifies logic when
 % constructing ali
 idxE = 0;
@@ -68,6 +70,8 @@ for idx = 1:1:(kCols+khatCols-1)
         ali( :, idxS:idxE ) = entry;
     end
 end
+
+ali
 
 % maximum possible number of terms in new khat/ahat (actual number of terms
 % is likely much less!)

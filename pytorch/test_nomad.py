@@ -1,4 +1,4 @@
-# Copyright (C) John Atkinson 2023
+# Copyright (C) John Atkinson 2017-2024
 import numpy as np
 import unittest
 from scipy.integrate import solve_ivp
